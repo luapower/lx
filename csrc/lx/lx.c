@@ -144,44 +144,22 @@ static LX_AINLINE void lx_buf_free(LX_Buf* b)
 
 /* Lexer state ------------------------------------------------------------ */
 
-typedef int LX_Char;    /* Lexical character. Unsigned ext. from char. */
+typedef int LX_Char;     /* Lexical character. Unsigned ext. from char. */
 
 struct LX_State {
-	int strscan_opt;         /* Current options for number parsing. */
-	LX_Value tokval;         /* Current token value. */
-	LX_Value lookaheadval;   /* Lookahead token value. */
-	const char *p;           /* Current position in input buffer. */
-	const char *pe;          /* End of input buffer. */
-	LX_Char c;               /* Current character. */
-	LX_Token tok;            /* Current token. */
-	LX_Token lookahead;      /* Lookahead token. */
-	LX_Buf sb;               /* String buffer for tokens. */
-	LX_Reader rfunc;         /* Reader callback. */
-	void *rdata;             /* Reader callback data. */
-	int linenumber;          /* Input line counter. */
-	int lastline;            /* Line of last token. */
+	int strscan_opt;      /* Current strscan options for number parsing. */
+	LX_Value tv;          /* Current token value. */
+	const char *p;        /* Current position in input buffer. */
+	const char *pe;       /* End of input buffer. */
+	LX_Char c;            /* Current character. */
+	LX_Token tok;         /* Current token. */
+	LX_Buf sb;            /* Buffer for string tokens. */
+	LX_Reader rfunc;      /* Reader callback. */
+	void *rdata;          /* Reader callback data. */
+	int linenumber;       /* Input line counter. */
+	int lastline;         /* Line of last token. */
+	int err;              /* Current error code */
 };
-
-#define lx_lex_error(a, b, c)
-
-/*
-void lx_lex_error(LX_State *ls, LX_Token tok, ErrMsg em, ...)
-{
-	const char *tokstr;
-	va_list argp;
-	if (tok == 0) {
-		tokstr = NULL;
-	} else if (tok == TK_NAME || tok == TK_STRING || tok == TK_NUMBER) {
-		lex_save(ls, '\0');
-		tokstr = sbufB(&ls->sb);
-	} else {
-		tokstr = lj_lex_token2str(ls, tok);
-	}
-	va_start(argp, em);
-	lj_err_lex(ls->L, ls->chunkname, tokstr, ls->linenumber, em, argp);
-	va_end(argp);
-}
-*/
 
 /* -- Buffer handling ----------------------------------------------------- */
 
@@ -219,20 +197,23 @@ static LX_AINLINE LX_Char lex_savenext(LX_State *ls)
 }
 
 /* Skip line break. Handles "\n", "\r", "\r\n" or "\n\r". */
-static void lex_newline(LX_State *ls)
+static int lex_newline(LX_State *ls)
 {
 	LX_Char old = ls->c;
 	lx_assert(lex_iseol(ls));
 	lex_next(ls);  /* Skip "\n" or "\r". */
 	if (lex_iseol(ls) && ls->c != old) lex_next(ls);  /* Skip "\n\r" or "\r\n". */
-	if (++ls->linenumber >= LX_MAX_LINE)
-		lx_lex_error(ls, ls->tok, LX_ERR_XLINES);
+	if (++ls->linenumber >= LX_MAX_LINE) {
+		ls->err = LX_ERR_XLINES;
+		return 1;
+	}
+	return 0;
 }
 
 /* -- Scanner for terminals ----------------------------------------------- */
 
 /* Parse a number literal. */
-static void lex_number(LX_State *ls, LX_Value *tv)
+static LX_Token lex_number(LX_State *ls)
 {
 	LX_Char c, xp = 'e';
 	lx_assert(lx_char_isdigit(ls->c));
@@ -245,9 +226,12 @@ static void lex_number(LX_State *ls, LX_Value *tv)
 	}
 	lex_save(ls, '\0');
 
-	tv->format = lx_strscan_scan(ls->sb.data, tv, ls->strscan_opt);
-	if (tv->format == STRSCAN_ERROR) {
-		lx_lex_error(ls, TK_number, LX_ERR_XNUMBER);
+	ls->tv.format = lx_strscan_scan(ls->sb.data, &ls->tv, ls->strscan_opt);
+	if (ls->tv.format == STRSCAN_ERROR) {
+		ls->err = LX_ERR_XNUMBER;
+		return TK_ERROR;
+	} else {
+		return TK_NUMBER;
 	}
 }
 
@@ -262,17 +246,17 @@ static int lex_skipeq(LX_State *ls)
 	return (ls->c == s) ? count : (-count) - 1;
 }
 
-/* Parse a long string or long comment (tv set to NULL). */
-static void lex_longstring(LX_State *ls, LX_Value *tv, int sep)
+/* Parse a long string or long comment. */
+static int lex_longstring(LX_State *ls, int sep, int string)
 {
 	lex_savenext(ls);  /* Skip second '['. */
 	if (lex_iseol(ls))  /* Skip initial newline. */
-		lex_newline(ls);
+		if (lex_newline(ls)) return 1;
 	for (;;) {
 		switch (ls->c) {
 			case LEX_EOF:
-				lx_lex_error(ls, TK_eof, tv ? LX_ERR_XLSTR : LX_ERR_XLCOM);
-				break;
+				ls->err = string ? LX_ERR_XLSTR : LX_ERR_XLCOM;
+				return 1;
 			case ']':
 				if (lex_skipeq(ls) == sep) {
 					lex_savenext(ls);  /* Skip second ']'. */
@@ -282,34 +266,33 @@ static void lex_longstring(LX_State *ls, LX_Value *tv, int sep)
 			case '\n':
 			case '\r':
 				lex_save(ls, '\n');
-				lex_newline(ls);
-				if (!tv) lx_buf_reset(&ls->sb);  /* Don't waste space for comments. */
+				if (lex_newline(ls)) return 1;
+				if (!string) lx_buf_reset(&ls->sb);  /* Don't waste space for comments. */
 				break;
 			default:
 				lex_savenext(ls);
 				break;
 		}
 	} endloop:
-	if (tv) {
+	if (string) {
 		ls->sb.offset = 2 + sep;
 		ls->sb.len -= 2*(2 + sep);
 	}
+	return 0;
 }
 
 /* Parse a string. */
-static void lex_string(LX_State *ls, LX_Value *tv)
+static int lex_string(LX_State *ls)
 {
 	LX_Char delim = ls->c;  /* Delimiter is '\'' or '"'. */
 	lex_savenext(ls);
 	while (ls->c != delim) {
 		switch (ls->c) {
 			case LEX_EOF:
-				lx_lex_error(ls, TK_eof, LX_ERR_XSTR);
-				continue;
 			case '\n':
 			case '\r':
-				lx_lex_error(ls, TK_string, LX_ERR_XSTR);
-				continue;
+				ls->err = LX_ERR_XSTR;
+				return 1;
 			case '\\': {
 				LX_Char c = lex_next(ls);  /* Skip the '\\'. */
 				switch (c) {
@@ -362,11 +345,20 @@ static void lex_string(LX_State *ls, LX_Value *tv)
 					case 'z':  /* Skip whitespace. */
 						lex_next(ls);
 						while (lx_char_isspace(ls->c))
-							if (lex_iseol(ls)) lex_newline(ls); else lex_next(ls);
+							if (lex_iseol(ls)) {
+								if (lex_newline(ls)) return 1;
+							} else {
+								lex_next(ls);
+							}
 						continue;
-					case '\n': case '\r': lex_save(ls, '\n'); lex_newline(ls); continue;
-					case '\\': case '\"': case '\'': break;
-					case LEX_EOF: continue;
+					case '\n': case '\r':
+						lex_save(ls, '\n');
+						if (lex_newline(ls)) return 1;
+						continue;
+					case '\\': case '\"': case '\'':
+						break;
+					case LEX_EOF:
+						continue;
 					default:
 						if (!lx_char_isdigit(c))
 							goto err_xesc;
@@ -377,7 +369,8 @@ static void lex_string(LX_State *ls, LX_Value *tv)
 								c = c*10 + (ls->c - '0');
 								if (c > 255) {
 								err_xesc:
-									lx_lex_error(ls, TK_STRING, LX_ERR_XESC);
+									ls->err = LX_ERR_XESC;
+									return 1;
 								}
 								lex_next(ls);
 							}
@@ -397,19 +390,19 @@ static void lex_string(LX_State *ls, LX_Value *tv)
 	lex_savenext(ls);  /* Skip trailing delimiter. */
 	ls->sb.offset = 1;
 	ls->sb.len -= 2;
+	return 0;
 }
 
 /* -- Main lexical scanner ------------------------------------------------ */
 
 /* Get next lexical token. */
-static LX_Token lex_scan(LX_State *ls, LX_Value *tv)
+static LX_Token lex_scan(LX_State *ls)
 {
 	lx_buf_reset(&ls->sb);
 	for (;;) {
 		if (lx_char_isident(ls->c)) {
 			if (lx_char_isdigit(ls->c)) {  /* Numeric literal. */
-				lex_number(ls, tv);
-				return TK_NUMBER;
+				return lex_number(ls);
 			}
 			/* Identifier or reserved word. */
 			do {
@@ -420,7 +413,7 @@ static LX_Token lex_scan(LX_State *ls, LX_Value *tv)
 		switch (ls->c) {
 			case '\n':
 			case '\r':
-				lex_newline(ls);
+				if (lex_newline(ls)) return TK_ERROR;
 				continue;
 			case ' ':
 			case '\t':
@@ -436,7 +429,7 @@ static LX_Token lex_scan(LX_State *ls, LX_Value *tv)
 					int sep = lex_skipeq(ls);
 					lx_buf_reset(&ls->sb);  /* `lex_skipeq' may dirty the buffer */
 					if (sep >= 0) {
-						lex_longstring(ls, NULL, sep);
+						if (lex_longstring(ls, sep, 0)) return TK_ERROR;
 						lx_buf_reset(&ls->sb);
 						continue;
 					}
@@ -448,13 +441,13 @@ static LX_Token lex_scan(LX_State *ls, LX_Value *tv)
 			case '[': {
 				int sep = lex_skipeq(ls);
 				if (sep >= 0) {
-					lex_longstring(ls, tv, sep);
+					if (lex_longstring(ls, sep, 1)) return TK_ERROR;
 					return TK_STRING;
 				} else if (sep == -1) {
 					return '[';
 				} else {
-					lx_lex_error(ls, TK_STRING, LX_ERR_XLDELIM);
-					continue;
+					ls->err = LX_ERR_XLDELIM;
+					return TK_ERROR;
 				}
 			}
 			case '=':
@@ -476,7 +469,7 @@ static LX_Token lex_scan(LX_State *ls, LX_Value *tv)
 				if (ls->c != ':') return ':'; else { lex_next(ls); return TK_LABEL; }
 			case '"':
 			case '\'':
-				lex_string(ls, tv);
+				if (lex_string(ls)) return TK_ERROR;
 				return TK_STRING;
 			case '.':
 				if (lex_savenext(ls) == '.') {
@@ -489,8 +482,7 @@ static LX_Token lex_scan(LX_State *ls, LX_Value *tv)
 				} else if (!lx_char_isdigit(ls->c)) {
 					return '.';
 				} else {
-					lex_number(ls, tv);
-					return TK_NUMBER;
+					return lex_number(ls);
 				}
 			case LEX_EOF:
 				return TK_EOF;
@@ -514,7 +506,6 @@ LX_State* lx_state_create(LX_Reader rfunc, void* rdata)
 	ls->rdata = rdata;
 	ls->linenumber = 1;
 	ls->lastline = 1;
-	ls->lookahead = TK_EOF;
 	lex_next(ls);  /* Read-ahead first char. */
 	return ls;
 }
@@ -531,22 +522,8 @@ void lx_state_free(LX_State *ls)
 LX_Token lx_next(LX_State *ls)
 {
 	ls->lastline = ls->linenumber;
-	if (LX_LIKELY(ls->lookahead == TK_EOF)) {  /* No lookahead token? */
-		ls->tok = lex_scan(ls, &ls->tokval);  /* Get next token. */
-	} else {  /* Otherwise return lookahead token. */
-		ls->tok = ls->lookahead;
-		ls->lookahead = TK_EOF;
-		ls->tokval = ls->lookaheadval;
-	}
+	ls->tok = lex_scan(ls);  /* Get next token. */
 	return ls->tok;
-}
-
-/* Look ahead for the next token. */
-LX_Token lx_lookahead(LX_State *ls)
-{
-	lx_assert(ls->lookahead == TK_EOF);
-	ls->lookahead = lex_scan(ls, &ls->lookaheadval);
-	return ls->lookahead;
 }
 
 /* Get the string content of the last-retrieved token */
@@ -555,15 +532,14 @@ char* lx_string_value(LX_State *ls, int* outlen)
 	*outlen = ls->sb.len;
 	return (char*)(ls->sb.data + ls->sb.offset);
 }
-uint32_t lx_number_format (LX_State *ls) { return ls->tokval.format; }
-double   lx_double_value  (LX_State *ls) { return ls->tokval.n; }
-int32_t  lx_int32_value   (LX_State *ls) { return ls->tokval.i; }
-uint64_t lx_uint64_value  (LX_State *ls) { return ls->tokval.u64; }
+int      lx_number_type   (LX_State *ls) { return (int)(ls->tv.format); }
+double   lx_double_value  (LX_State *ls) { return ls->tv.n; }
+int32_t  lx_int32_value   (LX_State *ls) { return ls->tv.i; }
+uint64_t lx_uint64_value  (LX_State *ls) { return ls->tv.u64; }
+int      lx_error         (LX_State *ls) { return ls->err; }
+int      lx_line_number   (LX_State *ls) { return ls->linenumber; }
 
-void lx_set_numbef_format (LX_State *ls, uint32_t opt)
-{
-	ls->strscan_opt = opt;
-}
+void lx_set_number_format (LX_State *ls, int opt) { ls->strscan_opt = opt; }
 
 /* -- Readers ------------------------------------------------------------- */
 

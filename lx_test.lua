@@ -2,12 +2,13 @@
 local glue = require'glue'
 local clock = require'time'.clock
 local fs = require'fs'
+local C = require'lx'
 
 local out = function(s) io.stdout:write(s) end
 local printf = function(...) out(string.format(...)) end
 
 local function test(f)
-	local f = assert(fs.open'../ui.lua')
+	local f = assert(fs.open'ui.lua')
 	local fs = assert(f:stream'rb')
 	local ls = C.lx_state_create_for_file(fs)
 
@@ -17,11 +18,13 @@ local function test(f)
 	local t0 = clock()
 	local n = 0
 	while true do
-		local tok = ls:next()
+		local tok = ls:next(); n = n + 1
 		if tok == C.TK_EOF then
 			break
+		elseif tok == C.TK_ERROR then
+			error(ls:errmsg())
 		elseif tok == C.TK_NUMBER then
-			local fmt = ls:num_format()
+			local fmt = ls:numtype()
 			if fmt == C.STRSCAN_NUM then
 				printf('%f ', ls:num())
 			elseif fmt == C.STRSCAN_IMAG then
@@ -46,19 +49,24 @@ local function test(f)
 		else
 			out(string.char(tok)); out' '
 		end
-		n = n + 1
 	end
 	out'\n'
+	local ln = ls:line()
+	local d = clock() - t0
 
 	ls:free()
 	fs:close()
 	f:close()
 
-	return clock() - t0
+	return d, n, ln
 end
 
-local d = 0
+local d, n, l = 0, 0, 0
 for i=1,1000 do
-	d = d + test()
+	local d1, n1, l1 = test()
+	d = d + d1
+	n = n + n1
+	l = l + l1
 end
-print(string.format('%.2fs', d))
+print(string.format(
+	'%.1fs %.1f Mtokens/s %.1f Mlines/s', d, n / d / 1e6, l / d / 1e6))

@@ -1,4 +1,4 @@
-//go@ gcc lx_test.c -L../../bin/mingw64 -llx -o lx_test.exe
+//go@ gcc -std=c11 -O3 lx_test.c lx.c -o lx_test.exe
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,7 +6,7 @@
 #include <time.h>
 #include "lx.h"
 
-clock_t test(const char* file) {
+clock_t test(const char* file, double* n, double* l) {
 	LX_State* ls;
 	FILE* f;
 	clock_t t0;
@@ -21,12 +21,17 @@ clock_t test(const char* file) {
 	t0 = clock();
 
 	while (1) {
-		LX_Token tok = lx_next(ls);
+		LX_Token tok = lx_next(ls); (*n)++;
 		switch (tok) {
 			case TK_EOF:
 				goto endloop;
+			case TK_ERROR: {
+				int err = lx_error(ls);
+				printf("ERROR: ", err);
+				goto endloop;
+			}
 			case TK_NUMBER: {
-				int fmt = lx_number_format(ls);
+				int fmt = lx_number_type(ls);
 				switch (fmt) {
 					case STRSCAN_NUM: {
 						double d = lx_double_value(ls);
@@ -71,6 +76,7 @@ clock_t test(const char* file) {
 		}
 	} endloop:
 
+	*l = *l + lx_line_number(ls);
 	t0 = clock() - t0;
 
 	lx_state_free(ls);
@@ -81,12 +87,14 @@ clock_t test(const char* file) {
 }
 
 void main(void) {
-	int i;
-	clock_t d = 0;
-	for (i = 0; i < 1000; i++) {
-		d += test("../ui.lua");
+	double d = 0;
+	double n = 0;
+	double l = 0;
+	for (int i = 0; i < 1000; i++) {
+		d += test("../../ui.lua", &n, &l);
 	}
-	printf("%.2fs\n", d / 1000.0);
+	d = d / 1000;
+	printf("%.1fs %.1f Mtokens/s %.1f Mlines/s\n",
+		d, n / d / 1e6, l / d / 1e6);
 	fflush(stdout);
-	while(1);
 }

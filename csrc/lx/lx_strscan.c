@@ -29,7 +29,7 @@ static uint32_t lx_fls(uint32_t x)
 #define setpinfV(o)     ((o)->u64 = U64x(7ff00000,00000000))
 #define lx_num2int(n)   ((int32_t)(n))
 
-typedef uint32_t LX_StrScanFmt;
+typedef int StrScanFmt;
 
 typedef struct LX_Value {
 	union {
@@ -37,7 +37,7 @@ typedef struct LX_Value {
 		double   n;
 		int32_t  i;
 	};
-	LX_StrScanFmt format;
+	StrScanFmt format;
 } LX_Value;
 
 /* -- Scanning numbers ---------------------------------------------------- */
@@ -129,8 +129,8 @@ static void strscan_double(uint64_t x, LX_Value* o, int32_t ex2, int32_t neg)
 }
 
 /* Parse hexadecimal number. */
-static LX_StrScanFmt strscan_hex(const uint8_t *p, LX_Value* o,
-											LX_StrScanFmt fmt, uint32_t opt,
+static StrScanFmt strscan_hex(const uint8_t *p, LX_Value* o,
+											StrScanFmt fmt, uint32_t opt,
 											int32_t ex2, int32_t neg, uint32_t dig)
 {
 	uint64_t x = 0;
@@ -175,8 +175,8 @@ static LX_StrScanFmt strscan_hex(const uint8_t *p, LX_Value* o,
 }
 
 /* Parse octal number. */
-static LX_StrScanFmt strscan_oct(const uint8_t *p, LX_Value *o,
-											LX_StrScanFmt fmt, int32_t neg, uint32_t dig)
+static StrScanFmt strscan_oct(const uint8_t *p, LX_Value *o,
+											StrScanFmt fmt, int32_t neg, uint32_t dig)
 {
 	uint64_t x = 0;
 
@@ -206,8 +206,8 @@ static LX_StrScanFmt strscan_oct(const uint8_t *p, LX_Value *o,
 }
 
 /* Parse decimal number. */
-static LX_StrScanFmt strscan_dec(const uint8_t *p, LX_Value *o,
-											LX_StrScanFmt fmt, uint32_t opt,
+static StrScanFmt strscan_dec(const uint8_t *p, LX_Value *o,
+											StrScanFmt fmt, uint32_t opt,
 											int32_t ex10, int32_t neg, uint32_t dig)
 {
 	uint8_t xi[STRSCAN_DDIG], *xip = xi;
@@ -355,8 +355,8 @@ static LX_StrScanFmt strscan_dec(const uint8_t *p, LX_Value *o,
 }
 
 /* Parse binary number. */
-static LX_StrScanFmt strscan_bin(const uint8_t *p, LX_Value *o,
-											LX_StrScanFmt fmt, uint32_t opt,
+static StrScanFmt strscan_bin(const uint8_t *p, LX_Value *o,
+											StrScanFmt fmt, uint32_t opt,
 											int32_t ex2, int32_t neg, uint32_t dig)
 {
 	uint64_t x = 0;
@@ -398,7 +398,7 @@ static LX_StrScanFmt strscan_bin(const uint8_t *p, LX_Value *o,
 }
 
 /* Scan string containing a number. Returns format. Returns value in o. */
-static LX_StrScanFmt lx_strscan_scan(const uint8_t *p, LX_Value *o, uint32_t opt)
+static StrScanFmt lx_strscan_scan(const uint8_t *p, LX_Value *o, uint32_t opt)
 {
 	int32_t neg = 0;
 
@@ -426,7 +426,7 @@ static LX_StrScanFmt lx_strscan_scan(const uint8_t *p, LX_Value *o, uint32_t opt
 
 	/* Parse regular number. */
 	{
-		LX_StrScanFmt fmt = STRSCAN_INT;
+		StrScanFmt fmt = STRSCAN_INT;
 		int cmask = LX_CHAR_DIGIT;
 		int base = (opt & STRSCAN_OPT_C) && *p == '0' ? 0 : 10;
 		const uint8_t *sp, *dp = NULL;
