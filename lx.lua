@@ -6,15 +6,14 @@ if not ... then require'lx_test'; return end
 
 local ffi = require'ffi'
 local C = ffi.load'lx'
+local M = {C = C}
 
 --number parsing options
-local STRSCAN_OPT_TOINT = 0x01
-local STRSCAN_OPT_TONUM = 0x02
-local STRSCAN_OPT_IMAG  = 0x04
-local STRSCAN_OPT_LL    = 0x08
-local STRSCAN_OPT_C     = 0x10
-
---returned format
+M.STRSCAN_OPT_TOINT = 0x01
+M.STRSCAN_OPT_TONUM = 0x02
+M.STRSCAN_OPT_IMAG  = 0x04
+M.STRSCAN_OPT_LL    = 0x08
+M.STRSCAN_OPT_C     = 0x10
 
 ffi.cdef[[
 /* Returned format. */
@@ -102,4 +101,99 @@ ffi.metatype('LX_State', {__index = {
 	line     = C.lx_line_number;
 }})
 
-return C
+--hi-level lexer inspired by Terra's lexer for extension languages.
+
+function M.lexer(arg, filename)
+	local lexer = {}
+
+	local s, read, file, ls
+	if type(arg) == 'string' then
+		s = arg
+		ls = C.lx_state_create_for_string(arg, #arg)
+	elseif type(arg) == 'function' then
+		read = ffi.cast('LX_Reader', arg)
+		ls = C.lx_state_create(read, nil)
+	else
+		file = arg
+		ls = C.lx_state_create_for_file(arg)
+	end
+
+	function lexer:free()
+		if read then read:free() end
+		ls:free()
+	end
+
+	function lexer:error(msg)
+		error(string.format('%s:%d', filename or '@string', self:line()), 0)
+	end
+
+	function lexer:errorexpected(what)
+		self:error(what..' expected')
+	end
+
+	local token, lookahead_token
+
+	function lexer:cur() return token end
+	function lexer:matches(tok) return token == tok end
+
+	function lexer:next()
+		if lookahead_token then
+			token, lookahead_token = lookahead_token, nil
+		else
+			token = ls:next()
+		end
+		return token
+	end
+
+	function lexer:nextif(tok)
+		if token == tok then
+			return self:next()
+		else
+			return false
+		end
+	end
+
+	function lexer:lookahead()
+		assert(not lookahead_token)
+		lookahead_token = ls:next()
+		return lookahead_token
+	end
+
+	function lexer:lookaheadmatches(tok)
+		return self:lookahead() == tok
+	end
+
+	function lexer:expect(tok)
+		local token = self:nextif(tok)
+		if not token then
+			self:errorexpected(tok)
+		end
+		return token
+	end
+
+	function lexer:expectmatch(tok, openingtok, line)
+		local token = self:nextif(tok)
+		if not token then
+			if self:line() == line then
+				self:errorexpected(tostring(tok))
+			else
+				self:error(string.format('%s expected (to close %s at line %d)',
+					tostring(tok), tostring(openingtok), line))
+			end
+		end
+		return token
+	end
+
+	function lexer:ref(name)
+	end
+
+	function lexer:luaexpr()
+	end
+
+	function lexer:luastats()
+	end
+
+	return lexer
+end
+
+return M

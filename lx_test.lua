@@ -2,7 +2,8 @@
 local glue = require'glue'
 local clock = require'time'.clock
 local fs = require'fs'
-local C = require'lx'
+local M = require'lx'
+local C = M.C
 
 local out = function(s) io.stdout:write(s) end
 local printf = function(...) out(string.format(...)) end
