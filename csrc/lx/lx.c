@@ -156,121 +156,122 @@ struct LX_State {
 	LX_Buf sb;            /* Buffer for string tokens. */
 	LX_Reader rfunc;      /* Reader callback. */
 	void *rdata;          /* Reader callback data. */
-	int linenumber;       /* Input line counter. */
-	int lastline;         /* Line of last token. */
+	int line;             /* Input line counter. */
+	int pos;              /* Position in current line. */
+	int lastline;         /* Line before current token. */
+	int lastpos;          /* Line pos before current token. */
 	int err;              /* Current error code */
 };
 
 /* -- Buffer handling ----------------------------------------------------- */
 
-#define LEX_EOF          (-1)
-#define lex_iseol(ls)    (ls->c == '\n' || ls->c == '\r')
+#define EOF          (-1)
+#define iseol(ls)    (ls->c == '\n' || ls->c == '\r')
 
 /* Get more input from reader. */
-static LX_NOINLINE LX_Char lex_more(LX_State *ls)
+static LX_NOINLINE LX_Char more(LX_State *ls)
 {
 	size_t sz;
 	const char *p = ls->rfunc(ls->rdata, &sz);
-	if (p == NULL || sz == 0) return LEX_EOF;
+	if (p == NULL || sz == 0) return EOF;
 	ls->pe = p + sz;
 	ls->p = p + 1;
 	return (LX_Char)(uint8_t)p[0];
 }
 
 /* Get next character. */
-static LX_AINLINE LX_Char lex_next(LX_State *ls)
+static LX_AINLINE LX_Char next(LX_State *ls)
 {
-	return (ls->c = ls->p < ls->pe ? (LX_Char)(uint8_t)*ls->p++ : lex_more(ls));
+	ls->pos++;
+	return (ls->c = ls->p < ls->pe ? (LX_Char)(uint8_t)*ls->p++ : more(ls));
 }
 
 /* Save character. */
-static LX_AINLINE void lex_save(LX_State *ls, LX_Char c)
+static LX_AINLINE void save(LX_State *ls, LX_Char c)
 {
 	lx_buf_putb(&ls->sb, c);
 }
 
 /* Save previous character and get next character. */
-static LX_AINLINE LX_Char lex_savenext(LX_State *ls)
+static LX_AINLINE LX_Char savenext(LX_State *ls)
 {
-	lex_save(ls, ls->c);
-	return lex_next(ls);
+	save(ls, ls->c);
+	return next(ls);
 }
 
 /* Skip line break. Handles "\n", "\r", "\r\n" or "\n\r". */
-static int lex_newline(LX_State *ls)
+static int newline(LX_State *ls)
 {
 	LX_Char old = ls->c;
-	lx_assert(lex_iseol(ls));
-	lex_next(ls);  /* Skip "\n" or "\r". */
-	if (lex_iseol(ls) && ls->c != old) lex_next(ls);  /* Skip "\n\r" or "\r\n". */
-	if (++ls->linenumber >= LX_MAX_LINE) {
+	lx_assert(iseol(ls));
+	next(ls);  /* Skip "\n" or "\r". */
+	if (iseol(ls) && ls->c != old) next(ls);  /* Skip "\n\r" or "\r\n". */
+	if (++ls->line >= LX_MAX_LINE) {
 		ls->err = LX_ERR_XLINES;
 		return 1;
 	}
+	ls->pos = 0;
 	return 0;
 }
 
 /* -- Scanner for terminals ----------------------------------------------- */
 
 /* Parse a number literal. */
-static LX_Token lex_number(LX_State *ls)
+static LX_Token number(LX_State *ls)
 {
 	LX_Char c, xp = 'e';
 	lx_assert(lx_char_isdigit(ls->c));
-	if ((c = ls->c) == '0' && (lex_savenext(ls) | 0x20) == 'x')
+	if ((c = ls->c) == '0' && (savenext(ls) | 0x20) == 'x')
 		xp = 'p';
 	while (lx_char_isident(ls->c) || ls->c == '.' ||
 				 ((ls->c == '-' || ls->c == '+') && (c | 0x20) == xp)) {
 		c = ls->c;
-		lex_savenext(ls);
+		savenext(ls);
 	}
-	lex_save(ls, '\0');
+	save(ls, '\0');
 
-	ls->tv.format = lx_strscan_scan(ls->sb.data, &ls->tv, ls->strscan_opt);
-	if (ls->tv.format == STRSCAN_ERROR) {
+	int fmt = lx_strscan_scan(ls->sb.data, &ls->tv, ls->strscan_opt);
+	if (fmt == TK_ERROR)
 		ls->err = LX_ERR_XNUMBER;
-		return TK_ERROR;
-	} else {
-		return TK_NUMBER;
-	}
+	return fmt;
 }
 
 /* Skip equal signs for "[=...=[" and "]=...=]" and return their count. */
-static int lex_skipeq(LX_State *ls)
+static int skipeq(LX_State *ls)
 {
 	int count = 0;
 	LX_Char s = ls->c;
 	lx_assert(s == '[' || s == ']');
-	while (lex_savenext(ls) == '=')
+	while (savenext(ls) == '=')
 		count++;
 	return (ls->c == s) ? count : (-count) - 1;
 }
 
 /* Parse a long string or long comment. */
-static int lex_longstring(LX_State *ls, int sep, int string)
+static int longstring(LX_State *ls, int sep, int string)
 {
-	lex_savenext(ls);  /* Skip second '['. */
-	if (lex_iseol(ls))  /* Skip initial newline. */
-		if (lex_newline(ls)) return 1;
+	savenext(ls);  /* Skip second '['. */
+	if (iseol(ls))  /* Skip initial newline. */
+		if (newline(ls)) return 1;
 	for (;;) {
 		switch (ls->c) {
-			case LEX_EOF:
+			case EOF:
 				ls->err = string ? LX_ERR_XLSTR : LX_ERR_XLCOM;
 				return 1;
 			case ']':
-				if (lex_skipeq(ls) == sep) {
-					lex_savenext(ls);  /* Skip second ']'. */
+				if (skipeq(ls) == sep) {
+					savenext(ls);  /* Skip second ']'. */
 					goto endloop;
 				}
 				break;
 			case '\n':
 			case '\r':
-				lex_save(ls, '\n');
-				if (lex_newline(ls)) return 1;
+				save(ls, '\n');
+				if (newline(ls)) return 1;
 				if (!string) lx_buf_reset(&ls->sb);  /* Don't waste space for comments. */
 				break;
 			default:
-				lex_savenext(ls);
+				savenext(ls);
 				break;
 		}
 	} endloop:
@@ -282,19 +283,19 @@ static int lex_longstring(LX_State *ls, int sep, int string)
 }
 
 /* Parse a string. */
-static int lex_string(LX_State *ls)
+static int string(LX_State *ls)
 {
 	LX_Char delim = ls->c;  /* Delimiter is '\'' or '"'. */
-	lex_savenext(ls);
+	savenext(ls);
 	while (ls->c != delim) {
 		switch (ls->c) {
-			case LEX_EOF:
+			case EOF:
 			case '\n':
 			case '\r':
 				ls->err = LX_ERR_XSTR;
 				return 1;
 			case '\\': {
-				LX_Char c = lex_next(ls);  /* Skip the '\\'. */
+				LX_Char c = next(ls);  /* Skip the '\\'. */
 				switch (c) {
 					case 'a': c = '\a'; break;
 					case 'b': c = '\b'; break;
@@ -304,20 +305,20 @@ static int lex_string(LX_State *ls)
 					case 't': c = '\t'; break;
 					case 'v': c = '\v'; break;
 					case 'x':  /* Hexadecimal escape '\xXX'. */
-						c = (lex_next(ls) & 15u) << 4;
+						c = (next(ls) & 15u) << 4;
 						if (!lx_char_isdigit(ls->c)) {
 							if (!lx_char_isxdigit(ls->c)) goto err_xesc;
 							c += 9 << 4;
 						}
-						c += (lex_next(ls) & 15u);
+						c += (next(ls) & 15u);
 						if (!lx_char_isdigit(ls->c)) {
 							if (!lx_char_isxdigit(ls->c)) goto err_xesc;
 							c += 9;
 						}
 						break;
 					case 'u':  /* Unicode escape '\u{XX...}'. */
-						if (lex_next(ls) != '{') goto err_xesc;
-						lex_next(ls);
+						if (next(ls) != '{') goto err_xesc;
+						next(ls);
 						c = 0;
 						do {
 							c = (c << 4) | (ls->c & 15u);
@@ -326,68 +327,68 @@ static int lex_string(LX_State *ls)
 								c += 9;
 							}
 							if (c >= 0x110000) goto err_xesc;  /* Out of Unicode range. */
-						} while (lex_next(ls) != '}');
+						} while (next(ls) != '}');
 						if (c < 0x800) {
 							if (c < 0x80) break;
-							lex_save(ls, 0xc0 | (c >> 6));
+							save(ls, 0xc0 | (c >> 6));
 						} else {
 							if (c >= 0x10000) {
-								lex_save(ls, 0xf0 | (c >> 18));
-								lex_save(ls, 0x80 | ((c >> 12) & 0x3f));
+								save(ls, 0xf0 | (c >> 18));
+								save(ls, 0x80 | ((c >> 12) & 0x3f));
 							} else {
 								if (c >= 0xd800 && c < 0xe000) goto err_xesc;  /* No surrogates. */
-								lex_save(ls, 0xe0 | (c >> 12));
+								save(ls, 0xe0 | (c >> 12));
 							}
-							lex_save(ls, 0x80 | ((c >> 6) & 0x3f));
+							save(ls, 0x80 | ((c >> 6) & 0x3f));
 						}
 						c = 0x80 | (c & 0x3f);
 						break;
 					case 'z':  /* Skip whitespace. */
-						lex_next(ls);
+						next(ls);
 						while (lx_char_isspace(ls->c))
-							if (lex_iseol(ls)) {
-								if (lex_newline(ls)) return 1;
+							if (iseol(ls)) {
+								if (newline(ls)) return 1;
 							} else {
-								lex_next(ls);
+								next(ls);
 							}
 						continue;
 					case '\n': case '\r':
-						lex_save(ls, '\n');
-						if (lex_newline(ls)) return 1;
+						save(ls, '\n');
+						if (newline(ls)) return 1;
 						continue;
 					case '\\': case '\"': case '\'':
 						break;
-					case LEX_EOF:
+					case EOF:
 						continue;
 					default:
 						if (!lx_char_isdigit(c))
 							goto err_xesc;
 						c -= '0';  /* Decimal escape '\ddd'. */
-						if (lx_char_isdigit(lex_next(ls))) {
+						if (lx_char_isdigit(next(ls))) {
 							c = c*10 + (ls->c - '0');
-							if (lx_char_isdigit(lex_next(ls))) {
+							if (lx_char_isdigit(next(ls))) {
 								c = c*10 + (ls->c - '0');
 								if (c > 255) {
 								err_xesc:
 									ls->err = LX_ERR_XESC;
 									return 1;
 								}
-								lex_next(ls);
+								next(ls);
 							}
 						}
-						lex_save(ls, c);
+						save(ls, c);
 						continue;
 				}
-				lex_save(ls, c);
-				lex_next(ls);
+				save(ls, c);
+				next(ls);
 				continue;
 				}
 			default:
-				lex_savenext(ls);
+				savenext(ls);
 				break;
 		}
 	}
-	lex_savenext(ls);  /* Skip trailing delimiter. */
+	savenext(ls);  /* Skip trailing delimiter. */
 	ls->sb.offset = 1;
 	ls->sb.len -= 2;
 	return 0;
@@ -396,52 +397,56 @@ static int lex_string(LX_State *ls)
 /* -- Main lexical scanner ------------------------------------------------ */
 
 /* Get next lexical token. */
-static LX_Token lex_scan(LX_State *ls)
+static LX_Token scan(LX_State *ls)
 {
 	lx_buf_reset(&ls->sb);
 	for (;;) {
 		if (lx_char_isident(ls->c)) {
 			if (lx_char_isdigit(ls->c)) {  /* Numeric literal. */
-				return lex_number(ls);
+				return number(ls);
 			}
 			/* Identifier or reserved word. */
 			do {
-				lex_savenext(ls);
+				savenext(ls);
 			} while (lx_char_isident(ls->c));
-			return TK_NAME; // ls->sb contains the name
+			return TK_NAME; /* ls->sb contains the name. */
 		}
 		switch (ls->c) {
 			case '\n':
 			case '\r':
-				if (lex_newline(ls)) return TK_ERROR;
+				if (newline(ls)) return TK_ERROR;
 				continue;
 			case ' ':
 			case '\t':
 			case '\v':
 			case '\f':
-				lex_next(ls);
+				next(ls);
 				continue;
 			case '-':
-				lex_next(ls);
+				next(ls);
+				if (ls->c == '>') { /* '->', Terra function pointer */
+					next(ls);
+					return TK_FUNC_PTR;
+				}
 				if (ls->c != '-') return '-';
-				lex_next(ls);
+				next(ls);
 				if (ls->c == '[') {  /* Long comment "--[=*[...]=*]". */
-					int sep = lex_skipeq(ls);
-					lx_buf_reset(&ls->sb);  /* `lex_skipeq' may dirty the buffer */
+					int sep = skipeq(ls);
+					lx_buf_reset(&ls->sb);  /* `skipeq' may dirty the buffer */
 					if (sep >= 0) {
-						if (lex_longstring(ls, sep, 0)) return TK_ERROR;
+						if (longstring(ls, sep, 0)) return TK_ERROR;
 						lx_buf_reset(&ls->sb);
 						continue;
 					}
 				}
 				/* Short comment "--.*\n". */
-				while (!lex_iseol(ls) && ls->c != LEX_EOF)
-					lex_next(ls);
+				while (!iseol(ls) && ls->c != EOF)
+					next(ls);
 				continue;
 			case '[': {
-				int sep = lex_skipeq(ls);
+				int sep = skipeq(ls);
 				if (sep >= 0) {
-					if (lex_longstring(ls, sep, 1)) return TK_ERROR;
+					if (longstring(ls, sep, 1)) return TK_ERROR;
 					return TK_STRING;
 				} else if (sep == -1) {
 					return '[';
@@ -451,44 +456,44 @@ static LX_Token lex_scan(LX_State *ls)
 				}
 			}
 			case '=':
-				lex_next(ls);
-				if (ls->c != '=') return '='; else { lex_next(ls); return TK_EQ; }
+				next(ls);
+				if (ls->c != '=') return '='; else { next(ls); return TK_EQ; }
 			case '<':
-				lex_next(ls);
-				if (ls->c == '<') { lex_next(ls); return TK_SHL; }
-				if (ls->c != '=') return '<'; else { lex_next(ls); return TK_LE; }
+				next(ls);
+				if (ls->c == '<') { next(ls); return TK_LSHIFT; }
+				if (ls->c != '=') return '<'; else { next(ls); return TK_LE; }
 			case '>':
-				lex_next(ls);
-				if (ls->c == '>') { lex_next(ls); return TK_SHR; }
-				if (ls->c != '=') return '>'; else { lex_next(ls); return TK_GE; }
+				next(ls);
+				if (ls->c == '>') { next(ls); return TK_RSHIFT; }
+				if (ls->c != '=') return '>'; else { next(ls); return TK_GE; }
 			case '~':
-				lex_next(ls);
-				if (ls->c != '=') return '~'; else { lex_next(ls); return TK_NE; }
+				next(ls);
+				if (ls->c != '=') return '~'; else { next(ls); return TK_NE; }
 			case ':':
-				lex_next(ls);
-				if (ls->c != ':') return ':'; else { lex_next(ls); return TK_LABEL; }
+				next(ls);
+				if (ls->c != ':') return ':'; else { next(ls); return TK_LABEL; }
 			case '"':
 			case '\'':
-				if (lex_string(ls)) return TK_ERROR;
+				if (string(ls)) return TK_ERROR;
 				return TK_STRING;
 			case '.':
-				if (lex_savenext(ls) == '.') {
-					lex_next(ls);
+				if (savenext(ls) == '.') {
+					next(ls);
 					if (ls->c == '.') {
-						lex_next(ls);
+						next(ls);
 						return TK_DOTS;   /* ... */
 					}
 					return TK_CONCAT;   /* .. */
 				} else if (!lx_char_isdigit(ls->c)) {
 					return '.';
 				} else {
-					return lex_number(ls);
+					return number(ls);
 				}
-			case LEX_EOF:
+			case EOF:
 				return TK_EOF;
 			default: {
 				LX_Char c = ls->c;
-				lex_next(ls);
+				next(ls);
 				return c;  /* Single-char tokens (+ - / ...). */
 			}
 		}
@@ -504,9 +509,8 @@ LX_State* lx_state_create(LX_Reader rfunc, void* rdata)
 	ls->strscan_opt = STRSCAN_OPT_TOINT | STRSCAN_OPT_LL | STRSCAN_OPT_IMAG;
 	ls->rfunc = rfunc;
 	ls->rdata = rdata;
-	ls->linenumber = 1;
-	ls->lastline = 1;
-	lex_next(ls);  /* Read-ahead first char. */
+	ls->line = 1;
+	next(ls);  /* Read-ahead first char. */
 	return ls;
 }
 
@@ -521,8 +525,9 @@ void lx_state_free(LX_State *ls)
 /* Return next lexical token. */
 LX_Token lx_next(LX_State *ls)
 {
-	ls->lastline = ls->linenumber;
-	ls->tok = lex_scan(ls);  /* Get next token. */
+	ls->lastline = ls->line;
+	ls->lastpos = ls->pos;
+	ls->tok = scan(ls);  /* Get next token. */
 	return ls->tok;
 }
 
@@ -532,14 +537,14 @@ char* lx_string_value(LX_State *ls, int* outlen)
 	*outlen = ls->sb.len;
 	return (char*)(ls->sb.data + ls->sb.offset);
 }
-int      lx_number_type   (LX_State *ls) { return (int)(ls->tv.format); }
 double   lx_double_value  (LX_State *ls) { return ls->tv.n; }
 int32_t  lx_int32_value   (LX_State *ls) { return ls->tv.i; }
 uint64_t lx_uint64_value  (LX_State *ls) { return ls->tv.u64; }
 int      lx_error         (LX_State *ls) { return ls->err; }
-int      lx_line_number   (LX_State *ls) { return ls->linenumber; }
+int      lx_line          (LX_State *ls) { return ls->lastline; }
+int      lx_pos           (LX_State *ls) { return ls->lastpos; }
 
-void lx_set_number_format (LX_State *ls, int opt) { ls->strscan_opt = opt; }
+void lx_set_strscan_opt   (LX_State *ls, int opt) { ls->strscan_opt = opt; }
 
 /* -- Readers ------------------------------------------------------------- */
 

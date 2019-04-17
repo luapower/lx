@@ -15,23 +15,13 @@
 #define STRSCAN_OPT_LL     0x08
 #define STRSCAN_OPT_C      0x10
 
-/* Returned format. */
-enum {
-	STRSCAN_ERROR,
-	STRSCAN_NUM,
-	STRSCAN_IMAG,
-	STRSCAN_INT,
-	STRSCAN_U32,
-	STRSCAN_I64,
-	STRSCAN_U64
-};
-
 /* Token types. */
 enum {
 	TK_EOF = -100, TK_ERROR,
-	TK_NUMBER, TK_NAME, TK_STRING, TK_LABEL,
+	TK_NUM, TK_IMAG, TK_INT, TK_U32, TK_I64, TK_U64, /* number types */
+	TK_NAME, TK_STRING, TK_LABEL,
 	TK_EQ, TK_LE, TK_GE, TK_NE, TK_DOTS, TK_CONCAT,
-	TK_SHL, TK_SHR,
+	TK_FUNC_PTR, TK_LSHIFT, TK_RSHIFT,
 };
 
 /* Error codes. */
@@ -58,13 +48,13 @@ void      lx_state_free              (LX_State*);
 
 LX_Token lx_next          (LX_State*);
 char*    lx_string_value  (LX_State*, int*);
-int      lx_number_type   (LX_State *ls);
 double   lx_double_value  (LX_State*);
 int32_t  lx_int32_value   (LX_State*);
 uint64_t lx_uint64_value  (LX_State*);
 int      lx_error         (LX_State *ls);
-int      lx_line_number   (LX_State *ls);
+int      lx_line          (LX_State *ls);
+int      lx_pos           (LX_State *ls);
 
-void lx_set_number_format (LX_State*, int);
+void lx_set_strscan_opt   (LX_State*, int);
 
 #endif
