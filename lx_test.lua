@@ -1,4 +1,4 @@
---go@ luajit *
+
 local glue = require'glue'
 local clock = require'time'.clock
 local fs = require'fs'
@@ -16,6 +16,7 @@ local function test_speed_for(filename)
 	local printf = glue.noop
 
 	local t0 = clock()
+	ls:next()
 	ls:luastats()
 	local n = ls:token_count()
 	local ln = ls:line()
@@ -29,50 +30,97 @@ local function test_speed_for(filename)
 end
 
 local function test_speed()
-	local d, n, l = 0, 0, 0
-	for i=1,20 do
-		local d1, n1, l1 = test_speed_for'ui.lua'
-		d = d + d1
-		n = n + n1
-		l = l + l1
-	end
+	local d, n, l = test_speed_for'ui.lua'
 	print(string.format(
-		'%.1fs %.1f Mtokens/s %.1f Mlines/s', d, n / d / 1e6, l / d / 1e6))
+		'%.0fms %.2f Mtokens/s %.2f Mlines/s', d * 1000, n / d / 1e6, l / d / 1e6))
 end
-test_speed()
 
 local function test_import()
 
 	local s = [[
-		do
-			import 'test1'
-			do
-				import 'test2'
-				key2
-			end
-			key1
-			key2
-		end
-	]]
+do
+	import 'test1'
+	do
+		import 'test2'
+		key2 z
+		a = @ + a
+	end
+	--key1 x
+	--key2 y
+	b = ` + b
+end
+]]
 
-	local s = [[
-
-		if 1 then end
-		do return end
-
-	]]
+local s = [[
+import'test1'
+   key1 z b = 2
+]]
 
 	local ls = lx.lexer(s)
 
 	function ls:import(lang)
 		if lang == 'test1' then
-			return {entrypoints = {'key1'}}
+			return {
+				keywords = {'key1'};
+				entrypoints = {
+					statement = {'key1'};
+					expression = {'`'};
+				};
+				statement = function(self, lx)
+					lx:next()
+					lx:ref(lx:expectval'<name>')
+					return function()
+						return 1
+					end
+				end,
+				expression = function(self, lx)
+					lx:next()
+					return function()
+						return 1
+					end
+				end,
+			}
 		elseif lang == 'test2' then
-			return {entrypoints = {'key2'}}
+			return {
+				keywords = {'key2'};
+				entrypoints = {
+					statement = {'key2'};
+					expression = {'@'};
+				};
+				statement = function(self, lx)
+					lx:next()
+					lx:ref(lx:expectval'<name>')
+					return function()
+						return 1
+					end
+				end,
+				expression = function(self, lx)
+					lx:next()
+					return function()
+						return 1
+					end
+				end,
+			}
 		end
 	end
 
-	local st = ls:luastats()
+	--ls:next()
+	--ls:luastats()
+	--pp(ls.subst)
+
+	local f = assert(ls:load())
 
 end
---test_import()
+
+local function test()
+	local ls = lx.lexer'abc = 42'
+	while true do
+		local tk = ls:next()
+		if tk == '<eof>' then break end
+		print(tk, ls:filepos(), ls:len())
+	end
+end
+--test()
+
+--test_speed()
+test_import()

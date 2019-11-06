@@ -7,6 +7,16 @@ if not ... then require'lx_test'; return end
 local ffi = require'ffi'
 local C = ffi.load'lx'
 local M = {C = C}
+local push, pop, concat = table.insert, table.remove, table.concat
+
+local function inherit(t)
+	local dt = {}; for k,v in pairs(t) do dt[k] = v end
+	return setmetatable(dt, {parent = t})
+end
+
+local function getparent(t)
+	return getmetatable(t).parent
+end
 
 --number parsing options
 M.STRSCAN_OPT_TOINT = 0x01
@@ -40,7 +50,7 @@ enum {
 typedef int LX_Token;
 typedef struct LX_State LX_State;
 
-typedef const char* (*LX_Reader)  (void*, size_t*);
+typedef const char* (*LX_Reader) (void*, size_t*);
 
 LX_State* lx_state_create            (LX_Reader, void*);
 LX_State* lx_state_create_for_file   (struct FILE*);
@@ -54,7 +64,9 @@ int32_t  lx_int32_value   (LX_State*);
 uint64_t lx_uint64_value  (LX_State*);
 int      lx_error         (LX_State *ls);
 int      lx_line          (LX_State *ls);
-int      lx_pos           (LX_State *ls);
+int      lx_linepos       (LX_State *ls);
+int      lx_filepos       (LX_State *ls);
+int      lx_len           (LX_State *ls);
 
 void lx_set_strscan_opt   (LX_State*, int);
 ]]
@@ -88,7 +100,9 @@ ffi.metatype('LX_State', {__index = {
 	error    = C.lx_error;
 	errmsg   = errmsg;
 	line     = C.lx_line;
-	pos      = C.lx_pos;
+	linepos  = C.lx_linepos;
+	filepos  = C.lx_filepos;
+	len      = C.lx_len;
 }})
 
 --lexer API inspired by Terra's lexer for extension languages.
@@ -99,6 +113,7 @@ for i,k in ipairs{
 	'end', 'false', 'for', 'function', 'goto', 'if',
 	'in', 'local', 'nil', 'not', 'or', 'repeat',
 	'return', 'then', 'true', 'until', 'while',
+	'import', --extension
 } do
 	lua_keywords[k] = true
 end
@@ -118,27 +133,28 @@ local token_names = {
 	[C.TK_NE      ] = '~=',
 	[C.TK_DOTS    ] = '...',
 	[C.TK_CONCAT  ] = '..',
-	[C.TK_FUNC_PTR] = '->',
-	[C.TK_LSHIFT  ] = '<<',
-	[C.TK_RSHIFT  ] = '>>',
+	[C.TK_FUNC_PTR] = '->', --extension
+	[C.TK_LSHIFT  ] = '<<', --extension
+	[C.TK_RSHIFT  ] = '>>', --extension
 	[C.TK_EOF     ] = '<eof>',
 }
 
 function M.lexer(arg, filename)
 
-	local s, read, file, ls
+	local lx = {filename = filename} --polymorphic lexer object
+
+	local read, ls
 	if type(arg) == 'string' then
-		s = arg
+		lx.s = arg
 		ls = C.lx_state_create_for_string(arg, #arg)
 	elseif type(arg) == 'function' then
 		read = ffi.cast('LX_Reader', arg)
 		ls = C.lx_state_create(read, nil)
 	else
-		file = arg
 		ls = C.lx_state_create_for_file(arg)
 	end
 
-	local function free()
+	function lx:free()
 		if read then read:free() end
 		ls:free()
 	end
@@ -147,17 +163,23 @@ function M.lexer(arg, filename)
 
 	local keywords = lua_keywords --reserved words in current scope
 
-	local tk, v, ln, ps --current token type, value and line:pos
+	local tk, v, ln, lp, fp, n
+	--^^current token type, value, line, line position, file position and token len.
 	local tk1 --next token
 
 	local function line()
-		if ln == nil then ln = ls:line() end; return ln
-	end
-	local function pos()
-		if ps == nil then ps = ls:pos() end; return ps
+		if ln == nil then
+			ln = ls:line()
+			lp = ls:linepos()
+		end
+		return ln, lp
 	end
 
-	--convert all token codes to Lua strings.
+	local function filepos() fp = fp or ls:filepos(); return fp end
+	local function len() n = n or ls:len(); return n end
+
+	--convert '<name>' tokens for reserved words to the actual keyword.
+	--also, convert token codes to Lua strings.
 	--this makes lexing 2x slower but simplifies the parsing API.
 	local function token(tk)
 		if tk >= 0 then
@@ -172,7 +194,7 @@ function M.lexer(arg, filename)
 
 	local function val() --get the parsed value of literal tokens.
 		if v == nil then
-			if tk == '<name>' or tk == '<string>' or tk == '::' then
+			if tk == '<name>' or tk == '<string>' then
 				v = ls:string()
 			elseif tk == '<number>' then
 				v = ls:num()
@@ -183,7 +205,7 @@ function M.lexer(arg, filename)
 			elseif tk == '<u64>' then
 				v = ls:u64()
 			else
-				v = true
+				v = tk
 			end
 		end
 		return v
@@ -195,17 +217,18 @@ function M.lexer(arg, filename)
 		if tk1 ~= nil then
 			tk, tk1 = tk1, nil
 		else
-			tk = ls:next()
-			tk = token(tk)
+			tk = token(ls:next())
 		end
-		v, ln, ps = nil
+		v, ln, lp, fp, n = nil
 		ntk = ntk + 1
+		--print(tk, filepos(), line())
 		return tk
 	end
 
 	local function lookahead()
 		assert(tk1 == nil)
-		val(); line(); pos() --save current state because ls:next() changes it.
+		val(); line(); filepos(); len()
+		--^^save current state because ls:next() changes it.
 		tk1 = ls:next()
 		local tk0 = tk
 		tk = tk1
@@ -224,8 +247,13 @@ function M.lexer(arg, filename)
 		end
 	end
 
+	function lx:error(msg) --stub
+		local line, pos = line()
+		_G.error(string.format('%s:%d:%d: %s', filename or '@string', line, pos, msg), 0)
+	end
+
 	local function error(msg)
-		_G.error(string.format('%s:%d:%d: %s', filename or '@string', line(), pos(), msg), 0)
+		lx:error(msg)
 	end
 
 	local function errorexpected(what)
@@ -240,14 +268,23 @@ function M.lexer(arg, filename)
 		return tk
 	end
 
-	local function expectmatch(tk1, openingtk, ln)
+	local function expectval(tk1)
+		if tk ~= tk1 then
+			errorexpected(tk1)
+		end
+		local s = val()
+		next()
+		return s
+	end
+
+	local function expectmatch(tk1, openingtk, ln, lp)
 		local tk = nextif(tk1)
 		if not tk then
 			if line() == ln then
 				errorexpected(tostring(tk1))
 			else
-				error(string.format('%s expected (to close %s at line %d)',
-					tostring(tk1), tostring(openingtk), ln))
+				error(string.format('%s expected (to close %s at %d:%d)',
+					tostring(tk1), tostring(openingtk), ln, lp))
 			end
 		end
 		return tk
@@ -255,43 +292,111 @@ function M.lexer(arg, filename)
 
 	--language extension API --------------------------------------------------
 
-	local langs = {} --{entrypoint -> lang}
+	local scope_level = 0
+	local lang_stack = {} --{lang1,...}
+	local imported = {} --{lang_name->true}
+	local entrypoints = {statement = {}, expression = {}} --{token->lang}
 
-	local function import(lang) --stub
+	local function push_entrypoints(lang, kind)
+		entrypoints[kind] = inherit(entrypoints[kind])
+		local tokens = lang.entrypoints[kind]
+		if tokens then
+			for i,tk in ipairs(tokens) do
+				entrypoints[kind][tk] = lang
+			end
+		end
+	end
+
+	local function pop_entrypoints(kind)
+		entrypoints[kind] = getparent(entrypoints[kind])
+	end
+
+	function lx:import(lang) --stub
 		return require(lang)
 	end
 
-	local function ref(name)
-		--
+	local function import(lang_name)
+		if imported[lang_name] then return end --already in scope
+		local lang = assert(lx:import(lang_name))
+		push(lang_stack, lang)
+		imported[lang_name] = true
+		lang.scope_level = scope_level
+		lang.name = lang_name
+		push_entrypoints(lang, 'statement')
+		push_entrypoints(lang, 'expression')
+		keywords = inherit(keywords)
+		if lang.keywords then
+			for i,k in ipairs(lang.keywords) do
+				keywords[k] = true
+			end
+		end
 	end
 
-	local function luaexpr()
+	function lx:luaexpr()
 		return function(env)
 			--
 		end
 	end
 
+	local function enter_scope()
+		scope_level = scope_level + 1
+	end
+
+	local function exit_scope()
+		for i = #lang_stack, 1, -1 do
+			local lang = lang_stack[i]
+			if lang.scope_level == scope_level then
+				lang_stack[i] = nil
+				imported[lang.name] = false
+				lang.scope_level = false
+				pop_entrypoints'statement'
+				pop_entrypoints'expression'
+				keywords = getparent(keywords)
+			else
+				assert(lang.scope_level < scope_level)
+				break
+			end
+		end
+		scope_level	= scope_level - 1
+	end
+
+	local subst = {} --{subst1,...}
+	local refs
+
+	function lx:ref(name)
+		assert(name)
+		push(refs, name)
+	end
+
+	local function lang_expr(lang)
+		refs = {}
+		local line0, i = line(), filepos()
+		local cons = lang:expression(lx)
+		local line1, len = line(), len()
+		local lines = line1 - line0
+		push(subst, {cons = cons, refs = refs, i = i, len = len, lines = lines})
+		refs = false
+	end
+
+	local function lang_stmt(lang)
+		refs = {}
+		local line0, i = line(), filepos()
+		local cons = lang:statement(lx)
+		local line1, len = line(), len()
+		local lines = line1 - line0
+		push(subst, {cons = cons, refs = refs, i = i, len = len, lines = lines, stmt = true})
+		refs = false
+	end
+
+	local function remove_tokens(i, len, lines)
+		push(subst, {i = i, len = len, lines = lines})
+	end
+
 	--Lua parser --------------------------------------------------------------
 
-	local indent = 0
-	local function D(s,...)
-		print(string.format('%-14s %-14s %s %s', tk, val(), ('  '):rep(indent), s), ...)
-	end
-	local function D1(...)
-		D(...)
-		indent = indent + 1
-	end
-	local function D0()
-		indent = indent - 1
-	end
+	local expr, block --fw. decl.
 
-	local noop = function() end
-	local D, D0, D1 = noop, noop, noop
-
-	local expr, expr_binop, block --fw. decl.
-
-	--check for end of block.
-	local function isend()
+	local function isend() --check for end of block
 		return tk == 'else' or tk == 'elseif' or tk == 'end'
 			or tk == 'until' or tk == '<eof>'
 	end
@@ -316,9 +421,9 @@ function M.lexer(arg, filename)
 		['and'] = {2,2},
 		['or' ] = {1,1},
 	}
-	local UNARY_PRIORITY = 9 -- priority for unary operators.
+	local unary_priority = 9 --priority for unary operators
 
-	local function params() --parse function parameters.
+	local function params() --(name,...[,...])
 		expect'('
 		if tk ~= ')' then
 			repeat
@@ -335,67 +440,63 @@ function M.lexer(arg, filename)
 		expect')'
 	end
 
-	local function body(line) --parse body of a function.
+	local function body(line, pos) --(params) block end
 		params()
 		block()
 		if tk ~= 'end' then
-			expectmatch('end', 'function', line)
+			expectmatch('end', 'function', line, pos)
 		end
 		next()
 	end
 
 	local function name()
-		--D1(val())
-		nextif'<name>'
-		--D0()
+		expect'<name>'
 	end
 
-	local function expr_field()
-		next() --skip dot or colon
+	local function expr_field() --.:name
+		next()
 		name()
 	end
 
-	local function expr_bracket() --parse index expression with brackets.
-		next() --skip '['
+	local function expr_bracket() --[expr]
+		next()
 		expr()
 		expect']'
 	end
 
-	local function expr_table() --parse table constructor expression.
-		local line = line()
-		expect('{')
+	local function expr_table() --{[expr]|name=expr,;...}
+		local line, pos = line()
+		expect'{'
 		while tk ~= '}' do
 			if tk == '[' then
-				expr_bracket() --already calls expr_toval.
-				expect('=')
+				expr_bracket()
+				expect'='
 			elseif tk == '<name>' and lookahead() == '=' then
 				name()
-				expect('=')
+				expect'='
 			end
 			expr()
 			if not nextif',' and not nextif';' then break end
 		end
-		expectmatch('}', '{', line)
+		expectmatch('}', '{', line, pos)
 	end
 
-	local function expr_list() --parse expression list; last expression left open.
-		--D1'expr_list'
+	local function expr_list() --expr,...
 		expr()
 		while nextif',' do
 			expr()
 		end
-		--D0()
 	end
 
-	local function args() --farse function argument list.
-		local line = line()
+	local function args() --(expr,...)|{table}|string
 		if tk == '(' then
+			local line, pos = line()
 			next()
 			if tk == ')' then --f()
 			else
 				expr_list()
 			end
-			expectmatch(')', '(', line)
+			expectmatch(')', '(', line, pos)
 		elseif tk == '{' then
 			expr_table()
 		elseif tk == '<string>' then
@@ -405,21 +506,14 @@ function M.lexer(arg, filename)
 		end
 	end
 
-	local function expr_bracket() --parse index expression with brackets.
-		next() --skip '['.
-		expr()
-		expect(']')
-	end
-
-	local function expr_primary() --parse primary expression.
-		--D1'expr_primary'
-		local vcall
+	local function expr_primary() --(expr)|name .name|[expr]|:nameargs|args ...
+		local iscall
 		--parse prefix expression.
 		if tk == '(' then
-			local line = line()
+			local line, pos = line()
 			next()
 			expr()
-			expectmatch(')', '(', line)
+			expectmatch(')', '(', line, pos)
 		elseif tk == '<name>' then
 			next()
 		else
@@ -428,80 +522,62 @@ function M.lexer(arg, filename)
 		while true do --parse multiple expression suffixes.
 			if tk == '.' then
 				expr_field()
-				vcall = false
+				iscall = false
 			elseif tk == '[' then
 				expr_bracket()
-				vcall = false
+				iscall = false
 			elseif tk == ':' then
 				next()
 				name()
 				args()
-				vcall = true
+				iscall = true
 			elseif tk == '(' or tk == '<string>' or tk == '{' then
 				args()
-				vcall = true
+				iscall = true
 			else
 				break
 			end
 		end
-		--D0()
-		return vcall
+		return iscall
 	end
 
-	local function expr_simple() --parse simple expression.
-		if tk == '<number>' then
-		elseif tk == '<imag>' then
-		elseif tk == '<int>' then
-		elseif tk == '<u32>' then
-		elseif tk == '<i64>' then
-		elseif tk == '<u64>' then
-		elseif tk == '<string>' then
-		elseif tk == 'nil' then
-		elseif tk == 'true' then
-		elseif tk == 'false' then
-		elseif tk == '...' then --vararg
-		elseif tk == '{' then --table constructor
-			expr_table()
-			return
-		elseif tk == 'function' then
+	local function expr_simple() --literal|...|{table}|function(params) end|expr_primary
+		if tk == '<number>' or tk == '<imag>' or tk == '<int>' or tk == '<u32>'
+			or tk == '<i64>' or tk == '<u64>' or tk == '<string>' or tk == 'nil'
+			or tk == 'true' or tk == 'false' or tk == '...'
+		then --literal
 			next()
-			body(line())
-			return
+		elseif tk == '{' then --{table}
+			expr_table()
+		elseif tk == 'function' then --function body
+			local line, pos = line()
+			next()
+			body(line, pos)
 		else
-			expr_primary()
-			return
+			local lang = entrypoints.expression[tk]
+			if lang then --entrypoint token for extension language.
+				lang_expr(lang)
+			else
+				expr_primary()
+			end
 		end
-		next()
-	end
-
-	local function expr_unop()
-		--D1('expr_unop', tk)
-		if tk == 'not' then
-		elseif tk == '-' then
-		elseif tk == '#' then
-		elseif tk == '&' then
-		else
-			expr_simple()
-			--D0()
-			return
-		end
-		next()
-		expr_binop(UNARY_PRIORITY)
-		--D0()
 	end
 
 	--parse binary expressions with priority higher than the limit.
-	function expr_binop(limit)
-		--D1('expr_binop', limit)
-		expr_unop()
+	local function expr_binop(limit)
+		if tk == 'not' or tk == '-' or tk == '#' then --unary operators
+			next()
+			expr_binop(unary_priority)
+		else
+			expr_simple()
+		end
 		local pri = priority[tk]
 		while pri and pri[1] > limit do
 			next()
 			--parse binary expression with higher priority.
-			op = expr_binop(pri[2])
+			local op = expr_binop(pri[2])
 			pri = priority[op]
 		end
-		--D0()
 		return tk --return unconsumed binary operator (if any).
 	end
 
@@ -509,135 +585,18 @@ function M.lexer(arg, filename)
 		expr_binop(0) --priority 0: parse whole expression.
 	end
 
-	local expr_cond = expr --parse conditional expression.
-
-	local function then_() --parse condition and 'then' block.
-		next() --skip 'if' or 'elseif'.
-		expr_cond()
-		expect'then'
-		block()
-	end
-
-	local function if_(line) --parse 'if' statement.
-		--D1'if'
-		then_()
-		while tk == 'elseif' do --parse multiple 'elseif' blocks.
-			then_()
-		end
-		if tk == 'else' then --parse optional 'else' block.
-			next() --skip 'else'.
-			block()
-		end
-		expectmatch('end', 'if', line)
-		--D0()
-	end
-
-	local function while_(line)
-		next() --skip 'while'.
-		expr_cond()
-		expect'do'
-		block()
-		expectmatch('end', 'while', line)
-	end
-
-	local function assignment() --recursively parse assignment statement.
-		--D1'assignment'
+	local function assignment() --expr_primary,... = expr,...
 		if nextif',' then --collect LHS list and recurse upwards.
 			expr_primary()
 			assignment()
 		else --parse RHS.
-			expect('=')
+			expect'='
 			expr_list()
 		end
-		--D0()
 	end
 
-	local function call_assign() --parse call statement or assignment.
-		if expr_primary() then --function call statement.
-		else --start of an assignment.
-			assignment()
-		end
-	end
-
-	local function return_() --parse 'return' statement.
-		--D1'return'
-		next() --skip 'return'.
-		if isend() or tk == ';' then --bare return.
-		else --return with one or more values.
-			expr_list()
-		end
-		--D0()
-	end
-
-	local function local_() --parse 'local' statement.
-		if nextif'function' then --local function declaration.
-			name()
-			body(line())
-		else --local variable declaration.
-			repeat -- collect LHS.
-				name()
-			until not nextif','
-		end
-		if nextif'=' then --optional RHS.
-			expr_list()
-		else --or implicitly set to nil.
-		end
-	end
-
-	local function func(line) --parse 'function' statement.
-		--D1'func'
-		next() --skip 'function'
-		name() --parse function name
-		while tk == '.' do --multiple dot-separated fields.
-			expr_field()
-		end
-		if tk == ':' then --optional colon to signify method call.
-			expr_field()
-		end
-		body(line)
-		--D0()
-	end
-
-	local function for_num(line) --parse numeric 'for'.
-		expect'='; expr()
-		expect','; expr()
-		if nextif',' then expr() end
-		expect'do'
-		block()
-	end
-
-	local function for_iter() --parse 'for' iterator.
-		while nextif',' do
-			name()
-		end
-		expect'in'
-		expr_list()
-		expect'do'
-		block()
-	end
-
-	local function for_(line) --parse 'for' statement.
-		next() --skip 'for'.
-		name() --get first variable name.
-		if tk == '=' then
-			for_num(line)
-		elseif tk == ',' or tk == 'in' then
-			for_iter()
-		else
-			errorexpected'"=" or "in"'
-		end
-		expectmatch('end', 'for', line)
-	end
-
-	local function repeat_(line) --parse 'repeat' statement.
-		next() --skip 'repeat'.
-		block()
-		expectmatch('until', 'repeat', line)
-		expr_cond() --parse condition (still inside inner scope).
-	end
-
-	local function label()
-		next() --skip '::'.
+	local function label() --::name::
+		next()
 		name()
 		expect'::'
 		--recursively parse trailing statements: labels and ';' (Lua 5.2 only).
@@ -654,83 +613,203 @@ function M.lexer(arg, filename)
 
 	--parse a statement. returns true if it must be the last one in a chunk.
 	local function stmt()
-		--D1'stmt'
-		local line = line()
-		if tk == 'if' then
-			if_(line)
-		elseif tk == 'while' then
-			while_(line)
-		elseif tk == 'do' then
+		if tk == 'if' then --if expr then block [elseif expr then block]... [else block] end
+			local line, pos = line()
+			next()
+			expr()
+			expect'then'
+			block()
+			while tk == 'elseif' do --elseif expr then block...
+				next()
+				expr()
+				expect'then'
+				block()
+			end
+			if tk == 'else' then --else block
+				next()
+				block()
+			end
+			expectmatch('end', 'if', line, pos)
+		elseif tk == 'while' then --while expr do block end
+			local line, pos = line()
+			next()
+			expr()
+			expect'do'
+			block()
+			expectmatch('end', 'while', line, pos)
+		elseif tk == 'do' then  --do block end
+			local line, pos = line()
 			next()
 			block()
-			expectmatch('end', 'do', line)
+			expectmatch('end', 'do', line, pos)
 		elseif tk == 'for' then
-			for_(line)
-		elseif tk == 'repeat' then
-			repeat_(line)
-		elseif tk == 'function' then
-			func(line)
-		elseif tk == 'local' then
+			--for name = expr, expr [,expr] do block end
+			--for name,... in expr,... do block end
+			local line, pos = line()
 			next()
-			local_()
-		elseif tk == 'return' then
-			return_()
-			--D0()
+			name()
+			if tk == '=' then -- = expr, expr [,expr]
+				next()
+				expr()
+				expect','
+				expr()
+				if nextif',' then expr() end
+			elseif tk == ',' or tk == 'in' then -- ,name... in expr,...
+				while nextif',' do
+					name()
+				end
+				expect'in'
+				expr_list()
+			else
+				errorexpected'"=" or "in"'
+			end
+			expect'do'
+			block()
+			expectmatch('end', 'for', line, pos)
+		elseif tk == 'repeat' then --repeat block until expr
+			local line, pos = line()
+			next()
+			block(false)
+			expectmatch('until', 'repeat', line, pos)
+			expr() --parse condition (still inside inner scope).
+			exit_scope()
+		elseif tk == 'function' then --function name[.name...][:name] body
+			local line, pos = line()
+			next()
+			name()
+			while tk == '.' do --.name...
+				expr_field()
+			end
+			if tk == ':' then --:name
+				expr_field()
+			end
+			body(line, pos)
+		elseif tk == 'local' then
+			--local function name body
+			--local name,...[=expr,...]
+			local line, pos = line()
+			next()
+			if nextif'function' then
+				name()
+				body(line, pos)
+			else
+				repeat --name,...
+					name()
+				until not nextif','
+				if nextif'=' then -- =expr,...
+					expr_list()
+				end
+			end
+		elseif tk == 'return' then --return [expr,...]
+			next()
+			if not (isend() or tk == ';') then
+				expr_list()
+			end
 			return true --must be last
 		elseif tk == 'break' then
 			next()
-			--D0()
-			return --must be last in Lua 5.1
+			--return true: must be last in Lua 5.1
 		elseif tk == ';' then
 			next()
 		elseif tk == '::' then
 			label()
-		elseif tk == 'goto' then
-			next() --skip 'goto'
+		elseif tk == 'goto' then --goto name
+			next()
 			name()
+		elseif tk == 'import' then --import 'lang_name'
+			local line0, i = line(), filepos()
+			next()
+			if tk ~= '<string>' then
+				errorexpected'<string>'
+			end
+			import(ls:string())
+			next() --calling next() after import() which alters the keywords table.
+			local line1, len = line(), len()
+			remove_tokens(i, len, line1 - line0)
 		else
-			call_assign()
+			local lang = entrypoints.statement[tk]
+			if lang then --entrypoint token for extension language.
+				lang_stmt(lang)
+			elseif not expr_primary() then --function call or assignment
+				assignment()
+			end
 		end
-		--D0()
 		return false
 	end
 
-	function block()
-		--D1'block'
+	function block(do_exit_scope) --stmt[;]...
+		enter_scope()
 		local islast
 		while not islast and not isend() do
 			islast = stmt()
 			nextif';'
 		end
-		--D0()
+		if do_exit_scope ~= false then
+			exit_scope()
+		end
 	end
 
-	local function luastats()
-		next()
+	function lx:luastats()
 		block()
 	end
 
-	return {
-		free = free,
-		error = error,
-		errorexpected = errorexpected,
-		--lexer API
-		cur = cur,
-		val = val,
-		line = line,
-		next = next,
-		nextif = nextif,
-		lookahead = lookahead,
-		expect = expect,
-		expectmatch = expectmatch,
-		--language extension API
-		import = import,
-		ref = ref,
-		luaexpr = luaexpr,
-		luastats = luastats,
-		--debugging
-		token_count = function() return ntk end,
-	}
+	--lexer API
+	lx.cur = cur
+	lx.val = val
+	lx.line = line
+	lx.filepos = filepos
+	lx.len = len
+	lx.next = next
+	lx.nextif = function(_, tk) return nextif(tk) end
+	lx.lookahead = lookahead
+	lx.expect = function(_, tk) return expect(tk) end
+	lx.expectval = function(_, tk) return expectval(tk) end
+	lx.expectmatch = function(_, ...) return expectmatch(...) end
+	lx.errorexpected = function(_, ...) return errorexpected(...) end
+
+	--debugging
+	lx.token_count = function() return ntk end
+
+	--frontend ----------------------------------------------------------------
+
+	function lx:load()
+		lx:next()
+		lx:luastats()
+		local s = lx.s
+		local dt = {}
+		local j = 1
+		pp(subst)
+		for ti,t in ipairs(subst) do
+			print(ti, j, ':', j, t.i-1, 'add: "'..s:sub(j, t.i-1)..'"') --, 'cut: "'..s:sub(t.i, t.j-1)..'"')
+			push(dt, s:sub(j, t.i-1))
+			if t.cons then
+				push(dt, ('__E(%d,{'):format(ti))
+				for i,ref in ipairs(t.refs) do
+					push(dt, ref)
+					push(dt, '=')
+					push(dt, ref)
+					push(dt, ';')
+				end
+				push(dt, '}) ')
+			end
+			for i = 1, t.lines do
+				push(dt, '\n')
+			end
+			print(t.i, t.len)
+			j = t.i + t.len
+		end
+		push(dt, s:sub(j))
+		local s = concat(dt)
+		print(s)
+		local func, err = loadstring(s, lx.filename)
+		if not func then return nil, err end
+		setfenv(func, {__E = function(i, env)
+			return subst[i].cons(env)
+		end})
+		return func
+	end
+
+	return lx
 end
 
 return M

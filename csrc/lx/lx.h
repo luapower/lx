@@ -53,7 +53,8 @@ int32_t  lx_int32_value   (LX_State*);
 uint64_t lx_uint64_value  (LX_State*);
 int      lx_error         (LX_State *ls);
 int      lx_line          (LX_State *ls);
-int      lx_pos           (LX_State *ls);
+int      lx_linepos       (LX_State *ls);
+int      lx_filepos       (LX_State *ls);
 
 void lx_set_strscan_opt   (LX_State*, int);
 
