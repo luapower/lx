@@ -1,5 +1,5 @@
 
---lx ffi binding.
+--LuaJIT lexer and parser in C+Lua/ffi.
 --Written by Cosmin Apreutesei. Public Domain.
 
 if not ... then require'lx_test'; return end
