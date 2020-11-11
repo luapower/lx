@@ -565,7 +565,7 @@ int      lx_end_filepos   (LX_State *ls) { return ls->filepos; }
 
 void lx_set_strscan_opt   (LX_State *ls, int opt) { ls->strscan_opt = opt; }
 
-/* -- Readers ------------------------------------------------------------- */
+/* -- Lexer API / readers ------------------------------------------------- */
 
 typedef struct FileReaderCtx {
 	FILE *fp;

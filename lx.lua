@@ -789,7 +789,7 @@ function M.lexer(arg, filename)
 		local s = lx.s
 		local dt = {}
 		local j = 1
-		pp(subst)
+		--pp(subst)
 		for ti,t in ipairs(subst) do
 			push(dt, s:sub(j, t.i-1))
 			if t.cons then
