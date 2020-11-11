@@ -160,8 +160,8 @@ struct LX_State {
 	int linepos;          /* Position in current line. */
 	int filepos;          /* Position in file. */
 	int start_line;       /* Line of current token. */
-	int start_linepos;    /* Line pos of current token. */
-	int start_filepos;    /* File pos of current token. */
+	int start_linepos;    /* Line offset of current token. */
+	int start_filepos;    /* File offset of current token. */
 	int err;              /* Current error code */
 };
 
@@ -560,7 +560,8 @@ int      lx_error         (LX_State *ls) { return ls->err; }
 int      lx_line          (LX_State *ls) { return ls->start_line; }
 int      lx_linepos       (LX_State *ls) { return ls->start_linepos; }
 int      lx_filepos       (LX_State *ls) { return ls->start_filepos; }
-int      lx_len           (LX_State *ls) { return ls->filepos - ls->start_filepos; }
+int      lx_end_line      (LX_State *ls) { return ls->line; }
+int      lx_end_filepos   (LX_State *ls) { return ls->filepos; }
 
 void lx_set_strscan_opt   (LX_State *ls, int opt) { ls->strscan_opt = opt; }
 

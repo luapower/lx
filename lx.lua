@@ -66,7 +66,8 @@ int      lx_error         (LX_State *ls);
 int      lx_line          (LX_State *ls);
 int      lx_linepos       (LX_State *ls);
 int      lx_filepos       (LX_State *ls);
-int      lx_len           (LX_State *ls);
+int      lx_end_line      (LX_State *ls);
+int      lx_end_filepos   (LX_State *ls);
 
 void lx_set_strscan_opt   (LX_State*, int);
 ]]
@@ -102,7 +103,8 @@ ffi.metatype('LX_State', {__index = {
 	line     = C.lx_line;
 	linepos  = C.lx_linepos;
 	filepos  = C.lx_filepos;
-	len      = C.lx_len;
+	end_line = C.lx_end_line;
+	end_filepos = C.lx_end_filepos;
 }})
 
 --lexer API inspired by Terra's lexer for extension languages.
@@ -163,9 +165,9 @@ function M.lexer(arg, filename)
 
 	local keywords = lua_keywords --reserved words in current scope
 
-	local fpe0 = 1 --filepos of end of last token
-	local tk, v, ln, lp, fp, n
-	--^^current token type, value, line, line position, file position and token len.
+	local efp0, eln0 --end filepos of last token
+	local tk, v, ln, eln, lp, fp, efp
+	--^^current token type, value, line, line at token end, line pos, file pos, file pos at token end.
 	local tk1 --next token
 
 	local function line()
@@ -177,8 +179,8 @@ function M.lexer(arg, filename)
 	end
 
 	local function filepos() fp = fp or ls:filepos(); return fp end
-	local function len() n = n or ls:len(); return n end
-	local function ws_len() return filepos() - fpe0 end --length of front whitespace
+	local function end_line() eln = eln or ls:end_line(); return eln end
+	local function end_filepos() efp = efp or ls:end_filepos(); return efp end
 
 	--convert '<name>' tokens for reserved words to the actual keyword.
 	--also, convert token codes to Lua strings.
@@ -216,13 +218,14 @@ function M.lexer(arg, filename)
 	local ntk = 0
 
 	local function next()
-		fpe0 = filepos() + len()
+		efp0 = end_filepos()
+		eln0 = end_line()
 		if tk1 ~= nil then
 			tk, tk1 = tk1, nil
 		else
 			tk = token(ls:next())
 		end
-		v, ln, lp, fp, n = nil
+		v, ln, eln, lp, fp, efp = nil
 		ntk = ntk + 1
 		--print(tk, filepos(), line())
 		return tk
@@ -230,7 +233,7 @@ function M.lexer(arg, filename)
 
 	local function lookahead()
 		assert(tk1 == nil)
-		val(); line(); filepos(); len()
+		val(); line(); filepos(); end_line(); end_filepos()
 		--^^save current state because ls:next() changes it.
 		tk1 = token(ls:next())
 		return tk1
@@ -332,9 +335,14 @@ function M.lexer(arg, filename)
 	end
 
 	function lx:luaexpr()
+		--
 		return function(env)
 			--
 		end
+	end
+
+	function lx:luastats()
+
 	end
 
 	local function enter_scope()
@@ -371,22 +379,24 @@ function M.lexer(arg, filename)
 		refs = {}
 		local i0, line0 = filepos(), line()
 		local cons = lang:expression(lx)
-		local i1, line1 = filepos() - ws_len(), line()
-		push(subst, {cons = cons, refs = refs, i = i0, len = i1 - i0, lines = line1 - line0})
+		local i1, line1 = efp0, eln0
+		push(subst, {
+			cons = cons, refs = refs,
+			i = i0, len = i1 - i0, lines = line1 - line0,
+		})
 		refs = false
 	end
 
 	local function lang_stmt(lang)
 		refs = {}
 		local i0, line0 = filepos(), line()
-		local cons = lang:statement(lx)
-		local i1, line1 = filepos() - ws_len(), line()
-		push(subst, {cons = cons, refs = refs, i = i0, len = i1 - i0, lines = line1 - line0, stmt = true})
+		local cons, names = lang:statement(lx)
+		local i1, line1 = efp0, eln0
+		push(subst, {
+			cons = cons, names = names, refs = refs, stmt = true,
+			i = i0, len = i1 - i0, lines = line1 - line0,
+		})
 		refs = false
-	end
-
-	local function remove_tokens(i, len, lines)
-		push(subst, {i = i, len = len, lines = lines})
 	end
 
 	--Lua parser --------------------------------------------------------------
@@ -690,11 +700,16 @@ function M.lexer(arg, filename)
 				name()
 				body(line, pos)
 			else
-				repeat --name,...
-					name()
-				until not nextif','
-				if nextif'=' then -- =expr,...
-					expr_list()
+				local lang = entrypoints.statement[tk]
+				if lang then --entrypoint token for extension language.
+					lang_stmt(lang)
+				else
+					repeat --name,...
+						name()
+					until not nextif','
+					if nextif'=' then -- =expr,...
+						expr_list()
+					end
 				end
 			end
 		elseif tk == 'return' then --return [expr,...]
@@ -721,8 +736,6 @@ function M.lexer(arg, filename)
 			end
 			import(ls:string())
 			next() --calling next() after import() which alters the keywords table.
-			local i1, line1 = filepos() - ws_len(), line()
-			remove_tokens(i0, i1 - i0, line1 - line0)
 		else
 			local lang = entrypoints.statement[tk]
 			if lang then --entrypoint token for extension language.
@@ -754,9 +767,9 @@ function M.lexer(arg, filename)
 	lx.cur = cur
 	lx.val = val
 	lx.line = line
-	lx.filepos = filepos
-	lx.len = len
-	lx.ws_len = ws_len
+	lx.offset = filepos
+	lx.end_line = end_line
+	lx.end_offset = end_filepos
 	lx.next = next
 	lx.nextif = function(_, tk) return nextif(tk) end
 	lx.lookahead = lookahead
@@ -776,19 +789,28 @@ function M.lexer(arg, filename)
 		local s = lx.s
 		local dt = {}
 		local j = 1
+		pp(subst)
 		for ti,t in ipairs(subst) do
 			push(dt, s:sub(j, t.i-1))
 			if t.cons then
-				push(dt, ('__E(%d,{'):format(ti))
+				if t.names and #t.names > 0 then
+					for i,name in ipairs(t.names) do
+						push(dt, name)
+						push(dt, ',')
+					end
+					dt[#dt] = '='
+				end
+				push(dt, ('§(%d,{'):format(ti))
 				for i,ref in ipairs(t.refs) do
 					push(dt, ref)
 					push(dt, '=')
 					push(dt, ref)
 					push(dt, ';')
 				end
-				push(dt, '}) ')
+				push(dt, '})')
+				push(dt, t.stmt and ';' or ' ')
 			end
-			for i = 2, t.lines do
+			for i = 1, t.lines do
 				push(dt, '\n')
 			end
 			j = t.i + t.len
@@ -798,9 +820,12 @@ function M.lexer(arg, filename)
 		--print(s)
 		local func, err = loadstring(s, lx.filename)
 		if not func then return nil, err end
-		setfenv(func, {__E = function(i, env)
-			return subst[i].cons(env)
-		end})
+		setfenv(func, {
+			§ = function(i, env)
+				return subst[i].cons(env)
+			end,
+			import = function() end,
+		})
 		return func
 	end
 

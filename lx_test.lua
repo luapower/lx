@@ -38,17 +38,22 @@ end
 local function test_import()
 
 	local s = [[
+local a = 5
+local b = 6
 do
 	import 'test1'
+	local z = 3
 	do
+		local z = 4
 		import 'test2'
 		key2 z
 		a = @ + a
 	end
-	--key1 x
-	--key2 y
+	local key1 f1 z
+	--key2 y --error
 	b = ` + b
 end
+return a, b, f1
 ]]
 
 local s1 = [[
@@ -68,15 +73,17 @@ import'test1'
 				};
 				statement = function(self, lx)
 					lx:next()
-					lx:ref(lx:expectval'<name>')
+					local name = lx:expectval'<name>'
+					local refname = lx:expectval'<name>'
+					lx:ref(refname)
 					return function(env)
-						pp(env)
-						return 1
-					end
+						--pp(env)
+						return name..':'..env[refname]
+					end, {name}
 				end,
 				expression = function(self, lx)
 					lx:next()
-					return function()
+					return function(env)
 						return 1
 					end
 				end,
@@ -91,13 +98,15 @@ import'test1'
 				statement = function(self, lx)
 					lx:next()
 					lx:ref(lx:expectval'<name>')
-					return function()
+					return function(env)
+						--pp(env)
 						return 1
 					end
 				end,
 				expression = function(self, lx)
 					lx:next()
-					return function()
+					return function(env)
+						--pp(env)
 						return 1
 					end
 				end,
@@ -110,6 +119,7 @@ import'test1'
 	--pp(ls.subst)
 
 	local f = assert(ls:load())
+	print(f())
 
 end
 
