@@ -51,9 +51,9 @@ do
 end
 ]]
 
-local s = [[
+local s1 = [[
 import'test1'
-   key1 z b = 2
+   key1 zz bbbb = 2
 ]]
 
 	local ls = lx.lexer(s)
@@ -69,7 +69,8 @@ import'test1'
 				statement = function(self, lx)
 					lx:next()
 					lx:ref(lx:expectval'<name>')
-					return function()
+					return function(env)
+						pp(env)
 						return 1
 					end
 				end,
@@ -122,5 +123,5 @@ local function test()
 end
 --test()
 
---test_speed()
+test_speed()
 test_import()

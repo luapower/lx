@@ -145,7 +145,7 @@ function M.lexer(arg, filename)
 
 	local read, ls
 	if type(arg) == 'string' then
-		lx.s = arg
+		lx.s = arg --anchor it
 		ls = C.lx_state_create_for_string(arg, #arg)
 	elseif type(arg) == 'function' then
 		read = ffi.cast('LX_Reader', arg)
@@ -163,6 +163,7 @@ function M.lexer(arg, filename)
 
 	local keywords = lua_keywords --reserved words in current scope
 
+	local fpe0 = 1 --filepos of end of last token
 	local tk, v, ln, lp, fp, n
 	--^^current token type, value, line, line position, file position and token len.
 	local tk1 --next token
@@ -177,6 +178,7 @@ function M.lexer(arg, filename)
 
 	local function filepos() fp = fp or ls:filepos(); return fp end
 	local function len() n = n or ls:len(); return n end
+	local function ws_len() return filepos() - fpe0 end --length of front whitespace
 
 	--convert '<name>' tokens for reserved words to the actual keyword.
 	--also, convert token codes to Lua strings.
@@ -214,6 +216,7 @@ function M.lexer(arg, filename)
 	local ntk = 0
 
 	local function next()
+		fpe0 = filepos() + len()
 		if tk1 ~= nil then
 			tk, tk1 = tk1, nil
 		else
@@ -229,11 +232,7 @@ function M.lexer(arg, filename)
 		assert(tk1 == nil)
 		val(); line(); filepos(); len()
 		--^^save current state because ls:next() changes it.
-		tk1 = ls:next()
-		local tk0 = tk
-		tk = tk1
-		tk1 = token(tk1)
-		tk = tk0
+		tk1 = token(ls:next())
 		return tk1
 	end
 
@@ -370,21 +369,19 @@ function M.lexer(arg, filename)
 
 	local function lang_expr(lang)
 		refs = {}
-		local line0, i = line(), filepos()
+		local i0, line0 = filepos(), line()
 		local cons = lang:expression(lx)
-		local line1, len = line(), len()
-		local lines = line1 - line0
-		push(subst, {cons = cons, refs = refs, i = i, len = len, lines = lines})
+		local i1, line1 = filepos() - ws_len(), line()
+		push(subst, {cons = cons, refs = refs, i = i0, len = i1 - i0, lines = line1 - line0})
 		refs = false
 	end
 
 	local function lang_stmt(lang)
 		refs = {}
-		local line0, i = line(), filepos()
+		local i0, line0 = filepos(), line()
 		local cons = lang:statement(lx)
-		local line1, len = line(), len()
-		local lines = line1 - line0
-		push(subst, {cons = cons, refs = refs, i = i, len = len, lines = lines, stmt = true})
+		local i1, line1 = filepos() - ws_len(), line()
+		push(subst, {cons = cons, refs = refs, i = i0, len = i1 - i0, lines = line1 - line0, stmt = true})
 		refs = false
 	end
 
@@ -717,15 +714,15 @@ function M.lexer(arg, filename)
 			next()
 			name()
 		elseif tk == 'import' then --import 'lang_name'
-			local line0, i = line(), filepos()
+			local i0, line0 = filepos(), line()
 			next()
 			if tk ~= '<string>' then
 				errorexpected'<string>'
 			end
 			import(ls:string())
 			next() --calling next() after import() which alters the keywords table.
-			local line1, len = line(), len()
-			remove_tokens(i, len, line1 - line0)
+			local i1, line1 = filepos() - ws_len(), line()
+			remove_tokens(i0, i1 - i0, line1 - line0)
 		else
 			local lang = entrypoints.statement[tk]
 			if lang then --entrypoint token for extension language.
@@ -759,6 +756,7 @@ function M.lexer(arg, filename)
 	lx.line = line
 	lx.filepos = filepos
 	lx.len = len
+	lx.ws_len = ws_len
 	lx.next = next
 	lx.nextif = function(_, tk) return nextif(tk) end
 	lx.lookahead = lookahead
@@ -778,9 +776,7 @@ function M.lexer(arg, filename)
 		local s = lx.s
 		local dt = {}
 		local j = 1
-		pp(subst)
 		for ti,t in ipairs(subst) do
-			print(ti, j, ':', j, t.i-1, 'add: "'..s:sub(j, t.i-1)..'"') --, 'cut: "'..s:sub(t.i, t.j-1)..'"')
 			push(dt, s:sub(j, t.i-1))
 			if t.cons then
 				push(dt, ('__E(%d,{'):format(ti))
@@ -792,15 +788,14 @@ function M.lexer(arg, filename)
 				end
 				push(dt, '}) ')
 			end
-			for i = 1, t.lines do
+			for i = 2, t.lines do
 				push(dt, '\n')
 			end
-			print(t.i, t.len)
 			j = t.i + t.len
 		end
 		push(dt, s:sub(j))
 		local s = concat(dt)
-		print(s)
+		--print(s)
 		local func, err = loadstring(s, lx.filename)
 		if not func then return nil, err end
 		setfenv(func, {__E = function(i, env)

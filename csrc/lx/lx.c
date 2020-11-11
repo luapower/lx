@@ -1,6 +1,6 @@
 /*
 ** LuaJIT lexer. Cosmin Apreutesei. Public Domain.
-** Most code is from LuaJIT. Copyright (C) 2005-2017 Mike Pall.
+** Most code is from LuaJIT. Copyright (C) 2005-2017 Mike Pall. MIT License.
 */
 
 #include "lx.h"
@@ -186,7 +186,7 @@ static LX_AINLINE LX_Char next(LX_State *ls)
 {
 	ls->linepos++;
 	ls->filepos++;
-	return (ls->c = ls->p < ls->pe ? (LX_Char)(uint8_t)*ls->p++ : more(ls));
+	return (ls->c = (ls->p < ls->pe ? (LX_Char)(uint8_t)*ls->p++ : more(ls)));
 }
 
 /* Save character. */
