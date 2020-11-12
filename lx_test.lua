@@ -16,13 +16,13 @@ local function test_speed_for(filename)
 	local printf = glue.noop
 
 	local t0 = clock()
-	ls:next()
-	ls:luastats()
-	local n = ls:token_count()
-	local ln = ls:line()
+	ls.next()
+	ls.luastats()
+	local n = ls.token_count()
+	local ln = ls.line()
 	local d = clock() - t0
 
-	ls:free()
+	ls.free()
 	fs:close()
 	f:close()
 
@@ -63,29 +63,29 @@ import'test1'
 
 	local ls = lx.lexer(s)
 
-	function ls:import(lang)
+	function ls.import(lang)
 		if lang == 'test1' then
 			return {
-				keywords = {'key1'};
+				keywords = {'key1'},
 				entrypoints = {
-					statement = {'key1'};
-					expression = {'`'};
-				};
-				statement = function(self, lx)
-					lx:next()
-					local name = lx:expectval'<name>'
-					local refname = lx:expectval'<name>'
-					lx:ref(refname)
-					return function(env)
-						--pp(env)
-						return name..':'..env[refname]
-					end, {name}
-				end,
-				expression = function(self, lx)
-					lx:next()
-					local expr = lx:luaexpr()
-					return function(env)
-						return expr(env)
+					statement = {'key1'},
+					expression = {'`'},
+				},
+				expression = function(self, kw, stmt)
+					ls.next()
+					if stmt then
+						local name = ls.expectval'<name>'
+						local refname = ls.expectval'<name>'
+						ls.ref(refname)
+						return function(env)
+							--pp(env)
+							return name..':'..env[refname]
+						end, {name}
+					else
+						local expr = ls.luaexpr()
+						return function(env)
+							return expr(env)
+						end
 					end
 				end,
 			}
@@ -96,30 +96,31 @@ import'test1'
 					statement = {'key2'};
 					expression = {'@'};
 				};
-				statement = function(self, lx)
-					lx:next()
-					lx:ref(lx:expectval'<name>')
-					return function(env)
-						--pp(env)
-						return 1
-					end
-				end,
-				expression = function(self, lx)
-					lx:next()
-					return function(env)
-						--pp(env)
-						return 1
+				expression = function(self, kw, stmt)
+					if stmt then
+						ls.next()
+						ls.ref(ls.expectval'<name>')
+						return function(env)
+							--pp(env)
+							return 1
+						end
+					else
+						ls.next()
+						return function(env)
+							--pp(env)
+							return 1
+						end
 					end
 				end,
 			}
 		end
 	end
 
-	--ls:next()
-	--ls:luastats()
+	--ls.next()
+	--ls.luastats()
 	--pp(ls.subst)
 
-	local f = assert(ls:load())
+	local f = assert(ls.load())
 	print(f())
 
 end
@@ -127,9 +128,9 @@ end
 local function test()
 	local ls = lx.lexer'abc = 42'
 	while true do
-		local tk = ls:next()
+		local tk = ls.next()
 		if tk == '<eof>' then break end
-		print(tk, ls:filepos(), ls:len())
+		print(tk, ls.filepos(), ls.len())
 	end
 end
 --test()

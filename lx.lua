@@ -156,7 +156,7 @@ function M.lexer(arg, filename)
 		ls = C.lx_state_create_for_file(arg)
 	end
 
-	function lx:free()
+	function lx.free()
 		if read then read:free() end
 		ls:free()
 	end
@@ -220,12 +220,8 @@ function M.lexer(arg, filename)
 	local function next()
 		efp0 = end_filepos()
 		eln0 = end_line()
-		if tk1 ~= nil then
-			tk, tk1 = tk1, nil
-		else
-			tk = token(ls:next())
-		end
-		v, ln, eln, lp, fp, efp = nil
+		tk = tk1 or token(ls:next())
+		tk1, v, ln, eln, lp, fp, efp = nil
 		ntk = ntk + 1
 		--print(tk, filepos(), line())
 		return tk
@@ -249,13 +245,9 @@ function M.lexer(arg, filename)
 		end
 	end
 
-	function lx:error(msg) --stub
+	local function error(msg) --stub
 		local line, pos = line()
 		_G.error(string.format('%s:%d:%d: %s', filename or '@string', line, pos, msg), 0)
-	end
-
-	local function error(msg)
-		lx:error(msg)
 	end
 
 	local function errorexpected(what)
@@ -275,8 +267,7 @@ function M.lexer(arg, filename)
 			errorexpected(tk1)
 		end
 		local s = val()
-		next()
-		return s
+		return s, next()
 	end
 
 	local function expectmatch(tk1, openingtk, ln, lp)
@@ -315,13 +306,19 @@ function M.lexer(arg, filename)
 		entrypoints[kind] = getparent(entrypoints[kind])
 	end
 
-	function lx:import(lang) --stub
-		return require(lang)
+	function lx.import(name) --stub
+		return require(name).lang(lx)
 	end
+
+	local langs = {}
 
 	local function import(lang_name)
 		if imported[lang_name] then return end --already in scope
-		local lang = assert(lx:import(lang_name))
+		local lang = langs[lang_name]
+		if not lang then
+			lang = assert(lx.import(lang_name))
+			langs[lang_name] = lang
+		end
 		push(lang_stack, lang)
 		imported[lang_name] = true
 		lang.scope_level = scope_level
@@ -336,12 +333,19 @@ function M.lexer(arg, filename)
 		end
 	end
 
-	function lx:luaexpr()
+	local refs
+
+	function lx.ref(name)
+		assert(name)
+		push(refs, name)
+	end
+
+	function lx.luaexpr()
 		refs = {}
 		local i0 = filepos()
 		expr()
 		local i1 = efp0
-		local s = 'return '..self.s:sub(i0, i1-1)
+		local s = 'return '..lx.s:sub(i0, i1-1)
 		local f = assert(loadstring(s))
 		return function(env)
 			setfenv(f, env)
@@ -349,7 +353,7 @@ function M.lexer(arg, filename)
 		end
 	end
 
-	function lx:luastats()
+	function lx.luastats()
 
 	end
 
@@ -376,18 +380,11 @@ function M.lexer(arg, filename)
 	end
 
 	local subst = {} --{subst1,...}
-	local refs
 
-	function lx:ref(name)
-		assert(name)
-		push(refs, name)
-	end
-
-	local function lang_expr(lang, stmt)
+	local function lang_expr(lang, kw, stmt)
 		refs = {}
 		local i0, line0 = filepos(), line()
-		local method = stmt and lang.statement or lang.expression
-		local cons, names = method(lang, lx)
+		local cons, names = lang:expression(kw, stmt)
 		local i1, line1 = efp0, eln0
 		push(subst, {
 			cons = cons, refs = refs, names = names, stmt = stmt,
@@ -457,7 +454,7 @@ function M.lexer(arg, filename)
 
 	local function ref()
 		if refs then
-			push(refs, expectval'<name>')
+			push(refs, (expectval'<name>'))
 		else
 			expect'<name>'
 		end
@@ -566,7 +563,7 @@ function M.lexer(arg, filename)
 		else
 			local lang = entrypoints.expression[tk]
 			if lang then --entrypoint token for extension language.
-				lang_expr(lang)
+				lang_expr(lang, tk)
 			else
 				expr_primary()
 			end
@@ -705,7 +702,7 @@ function M.lexer(arg, filename)
 			else
 				local lang = entrypoints.statement[tk]
 				if lang then --entrypoint token for extension language.
-					lang_expr(lang, true)
+					lang_expr(lang, tk, true)
 				else
 					repeat --name,...
 						name()
@@ -742,7 +739,7 @@ function M.lexer(arg, filename)
 		else
 			local lang = entrypoints.statement[tk]
 			if lang then --entrypoint token for extension language.
-				lang_expr(lang, true)
+				lang_expr(lang, tk, true)
 			elseif not expr_primary() then --function call or assignment
 				assignment()
 			end
@@ -762,7 +759,7 @@ function M.lexer(arg, filename)
 		end
 	end
 
-	function lx:luastats()
+	function lx.luastats()
 		block()
 	end
 
@@ -774,21 +771,21 @@ function M.lexer(arg, filename)
 	lx.end_line = end_line
 	lx.end_offset = end_filepos
 	lx.next = next
-	lx.nextif = function(_, tk) return nextif(tk) end
+	lx.nextif = nextif
 	lx.lookahead = lookahead
-	lx.expect = function(_, tk) return expect(tk) end
-	lx.expectval = function(_, tk) return expectval(tk) end
-	lx.expectmatch = function(_, ...) return expectmatch(...) end
-	lx.errorexpected = function(_, ...) return errorexpected(...) end
+	lx.expect = expect
+	lx.expectval = expectval
+	lx.expectmatch = expectmatch
+	lx.errorexpected = errorexpected
 
 	--debugging
 	lx.token_count = function() return ntk end
 
 	--frontend ----------------------------------------------------------------
 
-	function lx:load()
-		lx:next()
-		lx:luastats()
+	function lx.load()
+		lx.next()
+		lx.luastats()
 		local s = lx.s
 		local dt = {}
 		local j = 1
@@ -818,19 +815,32 @@ function M.lexer(arg, filename)
 		end
 		push(dt, s:sub(j))
 		local s = concat(dt)
-		--print(s)
-		local func, err = loadstring(s, lx.filename)
+		print(s)
+		local func, err = load(s, lx.filename, 't')
 		if not func then return nil, err end
-		setfenv(func, {
-			§ = function(i, env)
-				return subst[i].cons(env)
-			end,
-			import = function() end,
-		})
+		_G.import = function() end
+		_G['§'] = function(i, env)
+			return subst[i].cons(env)
+		end
 		return func
 	end
 
 	return lx
 end
+
+package.luaxpath = package.luaxpath or package.path:gsub('%.lua', '.luax')
+
+push(package.loaders, function(name)
+	local path, err = package.searchpath(name, package.luaxpath)
+	if not path then return nil, err end
+	return function()
+		local f = assert(io.open(path, 'r'))
+		local s = assert(f:read'*a')
+		f:close()
+		local lx = M.lexer(s, path)
+		local chunk = lx.load()
+		return chunk()
+	end
+end)
 
 return M
