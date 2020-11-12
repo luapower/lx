@@ -62,12 +62,12 @@ char*    lx_string_value  (LX_State*, int*);
 double   lx_double_value  (LX_State*);
 int32_t  lx_int32_value   (LX_State*);
 uint64_t lx_uint64_value  (LX_State*);
-int      lx_error         (LX_State *ls);
-int      lx_line          (LX_State *ls);
-int      lx_linepos       (LX_State *ls);
-int      lx_filepos       (LX_State *ls);
-int      lx_end_line      (LX_State *ls);
-int      lx_end_filepos   (LX_State *ls);
+int      lx_error         (LX_State*);
+int      lx_line          (LX_State*);
+int      lx_linepos       (LX_State*);
+int      lx_filepos       (LX_State*);
+int      lx_end_line      (LX_State*);
+int      lx_end_filepos   (LX_State*);
 
 void lx_set_strscan_opt   (LX_State*, int);
 ]]
@@ -294,6 +294,8 @@ function M.lexer(arg, filename)
 
 	--language extension API --------------------------------------------------
 
+	local expr, block --fw. decl.
+
 	local scope_level = 0
 	local lang_stack = {} --{lang1,...}
 	local imported = {} --{lang_name->true}
@@ -335,9 +337,15 @@ function M.lexer(arg, filename)
 	end
 
 	function lx:luaexpr()
-		--
+		refs = {}
+		local i0 = filepos()
+		expr()
+		local i1 = efp0
+		local s = 'return '..self.s:sub(i0, i1-1)
+		local f = assert(loadstring(s))
 		return function(env)
-			--
+			setfenv(f, env)
+			return f()
 		end
 	end
 
@@ -375,33 +383,20 @@ function M.lexer(arg, filename)
 		push(refs, name)
 	end
 
-	local function lang_expr(lang)
+	local function lang_expr(lang, stmt)
 		refs = {}
 		local i0, line0 = filepos(), line()
-		local cons = lang:expression(lx)
+		local method = stmt and lang.statement or lang.expression
+		local cons, names = method(lang, lx)
 		local i1, line1 = efp0, eln0
 		push(subst, {
-			cons = cons, refs = refs,
+			cons = cons, refs = refs, names = names, stmt = stmt,
 			i = i0, len = i1 - i0, lines = line1 - line0,
 		})
-		refs = false
-	end
-
-	local function lang_stmt(lang)
-		refs = {}
-		local i0, line0 = filepos(), line()
-		local cons, names = lang:statement(lx)
-		local i1, line1 = efp0, eln0
-		push(subst, {
-			cons = cons, names = names, refs = refs, stmt = true,
-			i = i0, len = i1 - i0, lines = line1 - line0,
-		})
-		refs = false
+		refs = nil
 	end
 
 	--Lua parser --------------------------------------------------------------
-
-	local expr, block --fw. decl.
 
 	local function isend() --check for end of block
 		return tk == 'else' or tk == 'elseif' or tk == 'end'
@@ -458,6 +453,14 @@ function M.lexer(arg, filename)
 
 	local function name()
 		expect'<name>'
+	end
+
+	local function ref()
+		if refs then
+			push(refs, expectval'<name>')
+		else
+			expect'<name>'
+		end
 	end
 
 	local function expr_field() --.:name
@@ -522,7 +525,7 @@ function M.lexer(arg, filename)
 			expr()
 			expectmatch(')', '(', line, pos)
 		elseif tk == '<name>' then
-			next()
+			ref()
 		else
 			error'unexpected symbol'
 		end
@@ -702,7 +705,7 @@ function M.lexer(arg, filename)
 			else
 				local lang = entrypoints.statement[tk]
 				if lang then --entrypoint token for extension language.
-					lang_stmt(lang)
+					lang_expr(lang, true)
 				else
 					repeat --name,...
 						name()
@@ -739,7 +742,7 @@ function M.lexer(arg, filename)
 		else
 			local lang = entrypoints.statement[tk]
 			if lang then --entrypoint token for extension language.
-				lang_stmt(lang)
+				lang_expr(lang, true)
 			elseif not expr_primary() then --function call or assignment
 				assignment()
 			end
@@ -792,24 +795,22 @@ function M.lexer(arg, filename)
 		--pp(subst)
 		for ti,t in ipairs(subst) do
 			push(dt, s:sub(j, t.i-1))
-			if t.cons then
-				if t.names and #t.names > 0 then
-					for i,name in ipairs(t.names) do
-						push(dt, name)
-						push(dt, ',')
-					end
-					dt[#dt] = '='
+			if t.names and #t.names > 0 then
+				for i,name in ipairs(t.names) do
+					push(dt, name)
+					push(dt, ',')
 				end
-				push(dt, ('§(%d,{'):format(ti))
-				for i,ref in ipairs(t.refs) do
-					push(dt, ref)
-					push(dt, '=')
-					push(dt, ref)
-					push(dt, ';')
-				end
-				push(dt, '})')
-				push(dt, t.stmt and ';' or ' ')
+				dt[#dt] = '='
 			end
+			push(dt, ('§(%d,{'):format(ti))
+			for i,ref in ipairs(t.refs) do
+				push(dt, ref)
+				push(dt, '=')
+				push(dt, ref)
+				push(dt, ';')
+			end
+			push(dt, '})')
+			push(dt, t.stmt and ';' or ' ')
 			for i = 1, t.lines do
 				push(dt, '\n')
 			end

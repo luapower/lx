@@ -51,7 +51,7 @@ do
 	end
 	local key1 f1 z
 	--key2 y --error
-	b = ` + b
+	b = `2 * b
 end
 return a, b, f1
 ]]
@@ -83,8 +83,9 @@ import'test1'
 				end,
 				expression = function(self, lx)
 					lx:next()
+					local expr = lx:luaexpr()
 					return function(env)
-						return 1
+						return expr(env)
 					end
 				end,
 			}
