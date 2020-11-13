@@ -341,12 +341,14 @@ function M.lexer(arg, filename)
 	end
 
 	function lx.luaexpr()
+		local refs0 = refs
 		refs = {}
 		local i0 = filepos()
 		expr()
 		local i1 = efp0
 		local s = 'return '..lx.s:sub(i0, i1-1)
 		local f = assert(loadstring(s))
+		refs = refs0
 		return function(env)
 			setfenv(f, env)
 			return f()
@@ -382,6 +384,7 @@ function M.lexer(arg, filename)
 	local subst = {} --{subst1,...}
 
 	local function lang_expr(lang, kw, stmt)
+		local refs0 = refs
 		refs = {}
 		local i0, line0 = filepos(), line()
 		local cons, names = lang:expression(kw, stmt)
@@ -390,7 +393,7 @@ function M.lexer(arg, filename)
 			cons = cons, refs = refs, names = names, stmt = stmt,
 			i = i0, len = i1 - i0, lines = line1 - line0,
 		})
-		refs = nil
+		refs = refs0
 	end
 
 	--Lua parser --------------------------------------------------------------
