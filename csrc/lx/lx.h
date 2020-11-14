@@ -21,7 +21,7 @@ enum {
 	TK_NUM, TK_IMAG, TK_INT, TK_U32, TK_I64, TK_U64, /* number types */
 	TK_NAME, TK_STRING, TK_LABEL,
 	TK_EQ, TK_LE, TK_GE, TK_NE, TK_DOTS, TK_CONCAT,
-	TK_FUNC_PTR, TK_LSHIFT, TK_RSHIFT,
+	TK_FUNC_PTR, TK_LSHIFT, TK_RSHIFT, /* extensions */
 };
 
 /* Error codes. */

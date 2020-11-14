@@ -335,23 +335,20 @@ function M.lexer(arg, filename)
 
 	local refs
 
-	function lx.ref(name)
-		assert(name)
-		push(refs, name)
+	function lx.ref(expr)
+		assert(expr)
+		refs[#refs+1] = expr
+		return #refs
 	end
 
 	function lx.luaexpr()
-		local refs0 = refs
-		refs = {}
 		local i0 = filepos()
 		expr()
 		local i1 = efp0
-		local s = 'return '..lx.s:sub(i0, i1-1)
-		local f = assert(loadstring(s))
-		refs = refs0
-		return function(env)
-			setfenv(f, env)
-			return f()
+		local s = lx.s:sub(i0, i1-1)
+		local ref_id = lx.ref(s)
+		return function(...)
+			return (select(ref_id, ...))
 		end
 	end
 
@@ -384,7 +381,6 @@ function M.lexer(arg, filename)
 	local subst = {} --{subst1,...}
 
 	local function lang_expr(lang, kw, stmt)
-		local refs0 = refs
 		refs = {}
 		local i0, line0 = filepos(), line()
 		local cons, names = lang:expression(kw, stmt)
@@ -393,7 +389,7 @@ function M.lexer(arg, filename)
 			cons = cons, refs = refs, names = names, stmt = stmt,
 			i = i0, len = i1 - i0, lines = line1 - line0,
 		})
-		refs = refs0
+		refs = nil
 	end
 
 	--Lua parser --------------------------------------------------------------
@@ -403,27 +399,42 @@ function M.lexer(arg, filename)
 			or tk == 'until' or tk == '<eof>'
 	end
 
-	local priority = {
-		['^'  ] = {11,10},
-		['*'  ] = {8,8},
-		['/'  ] = {8,8},
-		['%'  ] = {8,8},
-		['+'  ] = {7,7},
-		['-'  ] = {7,7},
-		['..' ] = {6,5},
-		['<<' ] = {4,4},
-		['>>' ] = {4,4},
-		['==' ] = {3,3},
-		['~=' ] = {3,3},
-		['<'  ] = {3,3},
-		['<=' ] = {3,3},
-		['>'  ] = {3,3},
-		['>=' ] = {3,3},
-		['->' ] = {3,2},
-		['and'] = {2,2},
-		['or' ] = {1,1},
+	local unary_priority = {
+		['not'] = 7 * 2,
+		['-'  ] = 7 * 2,
+		['#'  ] = 7 * 2,
 	}
-	local unary_priority = 9 --priority for unary operators
+
+	local binary_priority = {
+		['^'  ] = 8 * 2,
+
+		--unary priority: 7 * 2
+
+		['*'  ] = 6 * 2,
+		['/'  ] = 6 * 2,
+		['%'  ] = 6 * 2,
+
+		['+'  ] = 5 * 2,
+		['-'  ] = 5 * 2,
+
+		['..' ] = 4 * 2,
+
+		['==' ] = 3 * 2,
+		['~=' ] = 3 * 2,
+		['<'  ] = 3 * 2,
+		['<=' ] = 3 * 2,
+		['>'  ] = 3 * 2,
+		['>=' ] = 3 * 2,
+
+		['and'] = 2 * 2,
+
+		['or' ] = 1 * 2,
+	}
+
+	local right_associative = {
+		['^' ] = true,
+		['..'] = true,
+	}
 
 	local function params() --(name,...[,...])
 		expect'('
@@ -453,14 +464,6 @@ function M.lexer(arg, filename)
 
 	local function name()
 		expect'<name>'
-	end
-
-	local function ref()
-		if refs then
-			push(refs, (expectval'<name>'))
-		else
-			expect'<name>'
-		end
 	end
 
 	local function expr_field() --.:name
@@ -525,7 +528,7 @@ function M.lexer(arg, filename)
 			expr()
 			expectmatch(')', '(', line, pos)
 		elseif tk == '<name>' then
-			ref()
+			next()
 		else
 			error'unexpected symbol'
 		end
@@ -575,18 +578,19 @@ function M.lexer(arg, filename)
 
 	--parse binary expressions with priority higher than the limit.
 	local function expr_binop(limit)
-		if tk == 'not' or tk == '-' or tk == '#' then --unary operators
+		local pri = unary_priority[tk]
+		if pri then --unary operator
 			next()
-			expr_binop(unary_priority)
+			expr_binop(pri)
 		else
 			expr_simple()
 		end
-		local pri = priority[tk]
-		while pri and pri[1] > limit do
+		local pri = binary_priority[tk]
+		while pri and pri > limit do
 			next()
 			--parse binary expression with higher priority.
-			local op = expr_binop(pri[2])
-			pri = priority[op]
+			local op = expr_binop(pri - (right_associative[tk] and 1 or 0))
+			pri = binary_priority[op]
 		end
 		return tk --return unconsumed binary operator (if any).
 	end
@@ -789,12 +793,14 @@ function M.lexer(arg, filename)
 	function lx.load()
 		lx.next()
 		lx.luastats()
+
 		local s = lx.s
 		local dt = {}
 		local j = 1
 		--pp(subst)
 		for ti,t in ipairs(subst) do
 			push(dt, s:sub(j, t.i-1))
+
 			if t.names and #t.names > 0 then
 				for i,name in ipairs(t.names) do
 					push(dt, name)
@@ -802,28 +808,30 @@ function M.lexer(arg, filename)
 				end
 				dt[#dt] = '='
 			end
-			push(dt, ('§(%d,{'):format(ti))
-			for i,ref in ipairs(t.refs) do
-				push(dt, ref)
-				push(dt, '=')
-				push(dt, ref)
-				push(dt, ';')
+
+			push(dt, ('§(%d'):format(ti))
+			for i = 1, #t.refs do
+				push(dt, ',')
+				push(dt, t.refs[i])
 			end
-			push(dt, '})')
+			push(dt, ')')
+
 			push(dt, t.stmt and ';' or ' ')
 			for i = 1, t.lines do
 				push(dt, '\n')
 			end
+
 			j = t.i + t.len
 		end
 		push(dt, s:sub(j))
+
 		local s = concat(dt)
 		print(s)
 		local func, err = load(s, lx.filename, 't')
 		if not func then return nil, err end
 		_G.import = function() end
-		_G['§'] = function(i, env)
-			return subst[i].cons(env)
+		_G['§'] = function(i, ...)
+			return subst[i].cons(...)
 		end
 		return func
 	end
